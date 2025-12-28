@@ -18,6 +18,10 @@ import entity.ParkingLot;
  * חשוב:
  * - לא נוגעים בלוגיקה מעבר לזה.
  * - availableSpaces נשאר כמו שהיה (מוגדר ב-INSERT, לא מתעדכן ב-UPDATE).
+ *
+ * שינוי נוסף:
+ * - Soft delete: isActive (true/false) במקום DELETE אמיתי.
+ * - ברירת מחדל: מחזירים רק פעילים.
  */
 public class ParkingLotManagementController {
 
@@ -48,9 +52,9 @@ public class ParkingLotManagementController {
         if (city == null) throw new IllegalArgumentException("City is required.");
         if (availableSpaces < 0) throw new IllegalArgumentException("Available spaces must be 0 or higher.");
 
-        // ✅ NEW columns: street + number
+        // ✅ NEW: isActive default true
         final String sql =
-                "INSERT INTO ParkingLot ([name],[street],[number],[cityID],[availablaSpaces]) VALUES (?,?,?,?,?)";
+                "INSERT INTO ParkingLot ([name],[street],[number],[cityID],[availablaSpaces],[isActive]) VALUES (?,?,?,?,?,?)";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -60,12 +64,14 @@ public class ParkingLotManagementController {
             ps.setInt(3, number);
             ps.setInt(4, city.getId());
             ps.setInt(5, availableSpaces);
+            ps.setBoolean(6, true);
+
             ps.executeUpdate();
 
             int newId = readGeneratedId(ps, conn);
             if (newId <= 0) throw new RuntimeException("Insert succeeded but could not read generated ID");
 
-            return new ParkingLot(newId, n, s, number, city, availableSpaces);
+            return new ParkingLot(newId, n, s, number, city, availableSpaces, true);
 
         } catch (SQLException e) {
             throw new RuntimeException("Failed to add parking lot: " + e.getMessage(), e);
@@ -89,8 +95,9 @@ public class ParkingLotManagementController {
         if (number <= 0) throw new IllegalArgumentException("Number must be positive.");
         if (city == null) throw new IllegalArgumentException("City is required.");
 
+        // ✅ Only update if active (optional rule). If you prefer allow updating inactive, remove AND isActive=True
         final String sql =
-                "UPDATE ParkingLot SET [name]=?, [street]=?, [number]=?, [cityID]=? WHERE [ID]=?";
+                "UPDATE ParkingLot SET [name]=?, [street]=?, [number]=?, [cityID]=? WHERE [ID]=? AND [isActive]=True";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -102,26 +109,40 @@ public class ParkingLotManagementController {
             ps.setInt(5, id);
 
             int updated = ps.executeUpdate();
-            if (updated == 0) throw new IllegalArgumentException("ParkingLot not found: " + id);
+            if (updated == 0) {
+                // check if exists but inactive
+                if (isParkingLotInactive(id)) {
+                    throw new IllegalStateException("Parking lot is inactive and cannot be updated.");
+                }
+                throw new IllegalArgumentException("ParkingLot not found: " + id);
+            }
 
         } catch (SQLException e) {
             throw new RuntimeException("Failed to update parking lot: " + e.getMessage(), e);
         }
     }
 
+    /**
+     * Soft delete: sets isActive=false instead of DELETE.
+     */
     public void deleteParkingLot(int id) {
         ensureDb();
 
-        final String sql = "DELETE FROM ParkingLot WHERE [ID]=?";
+        if (isParkingLotInactive(id)) {
+            throw new IllegalStateException("Parking lot is already inactive.");
+        }
+
+        final String sql = "UPDATE ParkingLot SET [isActive]=False WHERE [ID]=? AND [isActive]=True";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
             ps.setInt(1, id);
-            ps.executeUpdate();
+            int updated = ps.executeUpdate();
+            if (updated == 0) throw new IllegalArgumentException("ParkingLot not found: " + id);
 
         } catch (SQLException e) {
-            throw new RuntimeException("Failed to delete parking lot: " + e.getMessage(), e);
+            throw new RuntimeException("Failed to deactivate parking lot: " + e.getMessage(), e);
         }
     }
 
@@ -132,7 +153,7 @@ public class ParkingLotManagementController {
         ensureDb();
 
         final String sql =
-                "SELECT p.[ID], p.[name], p.[street], p.[number], p.[availablaSpaces], " +
+                "SELECT p.[ID], p.[name], p.[street], p.[number], p.[availablaSpaces], p.[isActive], " +
                 "       c.[ID] AS CityID, c.[cityName] AS CityName " +
                 "FROM ParkingLot p " +
                 "LEFT JOIN City c ON p.[cityID] = c.[ID] " +
@@ -157,13 +178,19 @@ public class ParkingLotManagementController {
                 Object numObj = rs.getObject("number");
                 if (numObj != null) number = ((Number) numObj).intValue();
 
+                boolean isActive = true;
+                try {
+                    isActive = rs.getBoolean("isActive");
+                } catch (Exception ignore) {}
+
                 return new ParkingLot(
                         rs.getInt("ID"),
                         rs.getString("name"),
                         street,
                         number,
                         city,
-                        rs.getInt("availablaSpaces")
+                        rs.getInt("availablaSpaces"),
+                        isActive
                 );
             }
 
@@ -173,19 +200,28 @@ public class ParkingLotManagementController {
     }
 
     /**
-     * Loads all parking lots including City object (join City table).
+     * Default: only active parking lots.
      */
     public List<ParkingLot> getAllParkingLots() {
+        return getAllParkingLots(false);
+    }
+
+    /**
+     * Loads parking lots including City object (join City table).
+     * @param includeInactive if true, returns all; else only active.
+     */
+    public List<ParkingLot> getAllParkingLots(boolean includeInactive) {
         ensureDb();
 
         List<ParkingLot> lots = new ArrayList<>();
 
         final String sql =
-                "SELECT p.[ID], p.[name], p.[street], p.[number], p.[availablaSpaces], " +
+                "SELECT p.[ID], p.[name], p.[street], p.[number], p.[availablaSpaces], p.[isActive], " +
                 "       c.[ID] AS CityID, c.[cityName] AS CityName " +
                 "FROM ParkingLot p " +
                 "LEFT JOIN City c ON p.[cityID] = c.[ID] " +
-                "ORDER BY p.[ID]";
+                (includeInactive ? "" : "WHERE p.[isActive]=True ") +
+                (includeInactive ? "ORDER BY p.[isActive] DESC, p.[ID] ASC" : "ORDER BY p.[ID] ASC");
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql);
@@ -203,13 +239,19 @@ public class ParkingLotManagementController {
                 Object numObj = rs.getObject("number");
                 if (numObj != null) number = ((Number) numObj).intValue();
 
+                boolean isActive = true;
+                try {
+                    isActive = rs.getBoolean("isActive");
+                } catch (Exception ignore) {}
+
                 lots.add(new ParkingLot(
                         rs.getInt("ID"),
                         rs.getString("name"),
                         street,
                         number,
                         city,
-                        rs.getInt("availablaSpaces")
+                        rs.getInt("availablaSpaces"),
+                        isActive
                 ));
             }
 
@@ -218,6 +260,22 @@ public class ParkingLotManagementController {
         }
 
         return lots;
+    }
+
+    private boolean isParkingLotInactive(int id) {
+        final String sql = "SELECT [isActive] FROM ParkingLot WHERE [ID]=?";
+        try (Connection conn = db.open();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return false;
+                boolean active = true;
+                try { active = rs.getBoolean("isActive"); } catch (Exception ignore) {}
+                return !active;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to check parking lot active flag: " + e.getMessage(), e);
+        }
     }
 
     private int readGeneratedId(PreparedStatement ps, Connection conn) {

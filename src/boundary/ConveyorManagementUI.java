@@ -15,14 +15,13 @@ import java.util.List;
 /**
  * ConveyorManagementUI
  *
- * שינוי דרישה:
- * - Floor/X/Y הם שדות שמוגדרים ל-NULL בהוספה/העברה, והמנהל לא קובע אותם.
- * - לכן:
- *   - Floor field הופך read-only (לא נדרש קלט)
- *   - X/Y נשארים read-only (ויכולים להיות ריקים אם NULL)
- * - נעשתה הגנת קלט למשקל: אם לא int → הודעה ולא לקרוס.
- *
- * שאר ההתנהגות (pending weight + state machine) נשארת בדיוק כמו שהיה.
+ * שינויים:
+ * - Floor/X/Y read-only
+ * - Weight input validation (no crash)
+ * - Soft delete (Deactivate) + cannot deactivate twice
+ * - Default: show only ACTIVE conveyors
+ * - Optional: checkbox "Show inactive"
+ * - NEW button: "Turn ON ALL (Lot)"
  */
 public class ConveyorManagementUI extends JPanel {
 
@@ -36,7 +35,7 @@ public class ConveyorManagementUI extends JPanel {
 
     private JComboBox<ParkingLot> parkingLotBox;
 
-    private JTextField floorField; // now read-only
+    private JTextField floorField; // read-only
     private JTextField xField;     // read-only
     private JTextField yField;     // read-only
     private JTextField weightField;
@@ -45,6 +44,10 @@ public class ConveyorManagementUI extends JPanel {
     private JLabel pendingInfoLabel;
 
     private JButton refreshBtn;
+
+    // NEW UI controls
+    private JCheckBox showInactiveConveyors;
+    private JButton turnOnAllBtn;
 
     // CRUD
     private JButton addBtn;
@@ -132,18 +135,21 @@ public class ConveyorManagementUI extends JPanel {
         refreshBtn = new JButton("Refresh");
         refreshBtn.addActionListener(e -> loadConveyors());
 
+        showInactiveConveyors = new JCheckBox("Show inactive");
+        showInactiveConveyors.addActionListener(e -> loadConveyors());
+
         addBtn = new JButton("Add (OFF)");
-        deleteBtn = new JButton("Delete");
+        deleteBtn = new JButton("Deactivate"); // changed label
         moveBtn = new JButton("Move to selected ParkingLot");
 
         addBtn.addActionListener(e -> addConveyor());
-        deleteBtn.addActionListener(e -> deleteSelected());
+        deleteBtn.addActionListener(e -> deactivateSelected());
         moveBtn.addActionListener(e -> moveSelected());
 
         form.add(new JLabel("ParkingLot:"));
         form.add(parkingLotBox);
         form.add(refreshBtn);
-        form.add(new JLabel(""));
+        form.add(showInactiveConveyors);
 
         form.add(new JLabel("Floor (read-only):"));
         form.add(floorField);
@@ -173,15 +179,18 @@ public class ConveyorManagementUI extends JPanel {
         turnOffBtn.addActionListener(e -> turnOff());
         restartBtn.addActionListener(e -> restart());
 
+        turnOnAllBtn = new JButton("Turn ON ALL (Lot)");
+        turnOnAllBtn.addActionListener(e -> turnOnAll());
+
         actions.add(decideWeightBtn);
         actions.add(confirmWeightBtn);
         actions.add(turnOnBtn);
         actions.add(turnOffBtn);
 
         actions.add(restartBtn);
+        actions.add(turnOnAllBtn);
         actions.add(addBtn);
         actions.add(deleteBtn);
-        actions.add(new JLabel(""));
 
         bottom.add(actions, BorderLayout.SOUTH);
 
@@ -211,6 +220,8 @@ public class ConveyorManagementUI extends JPanel {
 
         addBtn.setEnabled(enabled);
         refreshBtn.setEnabled(enabled);
+        showInactiveConveyors.setEnabled(enabled);
+        turnOnAllBtn.setEnabled(enabled);
 
         floorField.setEnabled(enabled);
         xField.setEnabled(enabled);
@@ -225,16 +236,20 @@ public class ConveyorManagementUI extends JPanel {
         parkingLotBox.removeAllItems();
         if (parkingLotController == null) return;
 
+        // default controller returns only active lots (per our changes)
         for (ParkingLot p : parkingLotController.getAllParkingLots()) {
             parkingLotBox.addItem(p);
         }
+        parkingLotBox.setSelectedIndex(-1);
     }
 
     private void loadConveyors() {
         model.setRowCount(0);
         if (parkingLotId == null) return;
 
-        List<Conveyor> list = controller.getConveyorsByParkingLot(parkingLotId);
+        boolean includeInactive = showInactiveConveyors != null && showInactiveConveyors.isSelected();
+
+        List<Conveyor> list = controller.getConveyorsByParkingLot(parkingLotId, includeInactive);
         for (Conveyor c : list) {
 
             ConveyorLastStatus last = c.getLastStatus();
@@ -323,14 +338,13 @@ public class ConveyorManagementUI extends JPanel {
         turnOnBtn.setEnabled(isOff && controller.getPendingWeight(sel) == null);
         turnOffBtn.setEnabled(isOperational);
         restartBtn.setEnabled(isPaused);
+
+        // Turn ON ALL only makes sense when a lot is selected
+        turnOnAllBtn.setEnabled(parkingLotId != null);
     }
 
     // ========================= Actions =========================
 
-    /**
-     * בדיקת קלט למשקל:
-     * - אם לא מספר/לא חיובי → הודעה ולא לקרוס
-     */
     private Integer parsePositiveIntOrShow(JTextField tf, String name) {
         String raw = tf.getText() == null ? "" : tf.getText().trim();
         if (raw.isEmpty()) {
@@ -362,7 +376,6 @@ public class ConveyorManagementUI extends JPanel {
             Integer weight = parsePositiveIntOrShow(weightField, "MaxWeight");
             if (weight == null) return;
 
-            // ✅ floor/x/y ignored by controller and saved as NULL per requirement
             controller.addConveyorToParkingLot(lot.getId(), 1, 1, 1, weight, ConveyorStatus.Off);
 
             loadConveyors();
@@ -373,15 +386,15 @@ public class ConveyorManagementUI extends JPanel {
         }
     }
 
-    private void deleteSelected() {
+    private void deactivateSelected() {
         Integer id = getSelectedConveyorId();
         if (id == null) return;
 
-        int ok = JOptionPane.showConfirmDialog(this, "Delete Conveyor #" + id + " ?", "Confirm", JOptionPane.YES_NO_OPTION);
+        int ok = JOptionPane.showConfirmDialog(this, "Deactivate Conveyor #" + id + " ?", "Confirm", JOptionPane.YES_NO_OPTION);
         if (ok != JOptionPane.YES_OPTION) return;
 
         try {
-            controller.deleteConveyor(id);
+            controller.deleteConveyor(id); // now soft delete in controller
             loadConveyors();
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
@@ -461,6 +474,18 @@ public class ConveyorManagementUI extends JPanel {
 
         try {
             controller.turnOffConveyors(id);
+            loadConveyors();
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void turnOnAll() {
+        if (parkingLotId == null) return;
+
+        try {
+            int count = controller.turnOnAllConveyorsInParkingLot(parkingLotId);
+            JOptionPane.showMessageDialog(this, "Turned ON " + count + " conveyor(s).");
             loadConveyors();
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);

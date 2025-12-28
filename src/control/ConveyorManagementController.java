@@ -16,6 +16,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * - Floor/X/Y יכולים להיות NULL גם בקריאה (ResultSet) ולכן נשמרים כ-Integer ב-entity.
  *
  * שאר הלוגיקה (state machine + pending weight + lastStatus) נשארת בדיוק כמו שהיה.
+ *
+ * שינוי נוסף:
+ * - Soft delete: isActive (true/false) במקום DELETE אמיתי.
+ * - ברירת מחדל: מחזירים רק פעילים.
  */
 public class ConveyorManagementController {
 
@@ -50,9 +54,8 @@ public class ConveyorManagementController {
 
         if (status == null) status = ConveyorStatus.Off;
 
-        // ✅ NEW: On creation Floor/X/Y are NULL (manager cannot set them)
-        // On creation: Status=Off, LastStatus=NULL
-        String sql = "INSERT INTO Conveyor ([ParkingLotID],[Floor],[X],[Y],[MaxWeight],[Status],[LastStatus]) VALUES (?,?,?,?,?,?,?)";
+        // ✅ NEW: On creation Floor/X/Y are NULL + isActive=True
+        String sql = "INSERT INTO Conveyor ([ParkingLotID],[Floor],[X],[Y],[MaxWeight],[Status],[LastStatus],[isActive]) VALUES (?,?,?,?,?,?,?,?)";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
@@ -67,6 +70,7 @@ public class ConveyorManagementController {
             ps.setInt(5, maxVehicleWeightKg);
             ps.setString(6, status.name());
             ps.setString(7, null);
+            ps.setBoolean(8, true);
 
             ps.executeUpdate();
 
@@ -75,21 +79,32 @@ public class ConveyorManagementController {
             attemptCountById.put(newId, 0);
             pendingWeightById.remove(newId);
 
-            // lastStatus starts as null
-            return new Conveyor(newId, parkingLotId, null, null, null, maxVehicleWeightKg, status, null);
+            return new Conveyor(newId, parkingLotId, null, null, null, maxVehicleWeightKg, status, null, true);
 
         } catch (SQLException e) {
             throw new RuntimeException("Failed to add conveyor: " + e.getMessage(), e);
         }
     }
 
+    /**
+     * Default: only active conveyors.
+     */
     public List<Conveyor> getConveyorsByParkingLot(int parkingLotId) {
+        return getConveyorsByParkingLot(parkingLotId, false);
+    }
+
+    /**
+     * @param includeInactive if true, returns all; else only active.
+     */
+    public List<Conveyor> getConveyorsByParkingLot(int parkingLotId, boolean includeInactive) {
         ensureDb();
 
         List<Conveyor> list = new ArrayList<>();
         String sql =
-                "SELECT [ID],[ParkingLotID],[Floor],[X],[Y],[MaxWeight],[Status],[LastStatus] " +
-                "FROM Conveyor WHERE [ParkingLotID]=? ORDER BY [ID]";
+                "SELECT [ID],[ParkingLotID],[Floor],[X],[Y],[MaxWeight],[Status],[LastStatus],[isActive] " +
+                "FROM Conveyor WHERE [ParkingLotID]=? " +
+                (includeInactive ? "" : "AND [isActive]=True ") +
+                (includeInactive ? "ORDER BY [isActive] DESC, [ID] ASC" : "ORDER BY [ID] ASC");
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -111,9 +126,12 @@ public class ConveyorManagementController {
                     ConveyorStatus status = parseStatus(rs.getString("Status"));
                     ConveyorLastStatus lastStatus = safeParseLastStatus(rs.getString("LastStatus"));
 
+                    boolean isActive = true;
+                    try { isActive = rs.getBoolean("isActive"); } catch (Exception ignore) {}
+
                     attemptCountById.putIfAbsent(id, 0);
 
-                    list.add(new Conveyor(id, lotId, floor, x, y, maxW, status, lastStatus));
+                    list.add(new Conveyor(id, lotId, floor, x, y, maxW, status, lastStatus, isActive));
                 }
             }
 
@@ -130,8 +148,12 @@ public class ConveyorManagementController {
         requirePositiveId(conveyorId);
         if (newParkingLotId <= 0) throw new IllegalArgumentException("New ParkingLotID must be positive.");
 
+        if (isConveyorInactive(conveyorId)) {
+            throw new IllegalStateException("Conveyor is inactive and cannot be moved.");
+        }
+
         // ✅ NEW: when moving, Floor/X/Y become NULL (manager cannot set)
-        String sql = "UPDATE Conveyor SET [ParkingLotID]=?, [X]=?, [Y]=?, [Floor]=? WHERE [ID]=?";
+        String sql = "UPDATE Conveyor SET [ParkingLotID]=?, [X]=?, [Y]=?, [Floor]=? WHERE [ID]=? AND [isActive]=True";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -152,26 +174,63 @@ public class ConveyorManagementController {
         }
     }
 
+    /**
+     * Soft delete: sets isActive=false instead of DELETE.
+     */
     public void deleteConveyor(int conveyorId) {
         ensureDb();
         requirePositiveId(conveyorId);
 
-        String sql = "DELETE FROM Conveyor WHERE [ID]=?";
+        if (isConveyorInactive(conveyorId)) {
+            throw new IllegalStateException("Conveyor is already inactive.");
+        }
+
+        String sql = "UPDATE Conveyor SET [isActive]=False WHERE [ID]=? AND [isActive]=True";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
 
             ps.setInt(1, conveyorId);
 
-            int deleted = ps.executeUpdate();
-            if (deleted == 0) throw new IllegalArgumentException("Conveyor not found: " + conveyorId);
+            int updated = ps.executeUpdate();
+            if (updated == 0) throw new IllegalArgumentException("Conveyor not found: " + conveyorId);
 
             attemptCountById.remove(conveyorId);
             pendingWeightById.remove(conveyorId);
 
         } catch (SQLException e) {
-            throw new RuntimeException("Failed to delete conveyor: " + e.getMessage(), e);
+            throw new RuntimeException("Failed to deactivate conveyor: " + e.getMessage(), e);
         }
+    }
+
+    // =========================
+    // NEW: Bulk action
+    // =========================
+
+    /**
+     * Turns ON all ACTIVE conveyors in a parking lot that are currently OFF and have NO pending weight.
+     * Returns how many were successfully turned on.
+     */
+    public int turnOnAllConveyorsInParkingLot(int parkingLotId) {
+        ensureDb();
+        if (parkingLotId <= 0) throw new IllegalArgumentException("ParkingLotID must be positive.");
+
+        List<Conveyor> list = getConveyorsByParkingLot(parkingLotId, false); // only active
+        int turnedOn = 0;
+
+        for (Conveyor c : list) {
+            try {
+                if (c.getStatus() == ConveyorStatus.Off && !pendingWeightById.containsKey(c.getId())) {
+                    // same rules as single turnOn
+                    attemptCountById.put(c.getId(), 0);
+                    updateConveyorStatus_WithHistoryRule(c.getId(), ConveyorStatus.Testing);
+                    turnedOn++;
+                }
+            } catch (Exception ignore) {
+                // skip failed ones; keep going
+            }
+        }
+        return turnedOn;
     }
 
     // =========================
@@ -184,6 +243,9 @@ public class ConveyorManagementController {
         requirePositiveWeight(newWeight);
 
         Conveyor c = getConveyorById(conveyorId);
+        if (!c.isActive()) {
+            throw new IllegalStateException("Conveyor is inactive.");
+        }
         if (c.getStatus() != ConveyorStatus.Off) {
             throw new IllegalStateException("Max weight change can be decided ONLY when conveyor is OFF.");
         }
@@ -195,6 +257,9 @@ public class ConveyorManagementController {
         requirePositiveId(conveyorId);
 
         Conveyor c = getConveyorById(conveyorId);
+        if (!c.isActive()) {
+            throw new IllegalStateException("Conveyor is inactive.");
+        }
         if (c.getStatus() != ConveyorStatus.Off) {
             throw new IllegalStateException("Max weight can be confirmed ONLY when conveyor is OFF.");
         }
@@ -217,6 +282,9 @@ public class ConveyorManagementController {
         requirePositiveId(conveyorId);
 
         Conveyor c = getConveyorById(conveyorId);
+        if (!c.isActive()) {
+            throw new IllegalStateException("Conveyor is inactive.");
+        }
         if (c.getStatus() != ConveyorStatus.Off) {
             throw new IllegalStateException("Turn ON is allowed only from OFF state.");
         }
@@ -233,6 +301,9 @@ public class ConveyorManagementController {
         requirePositiveId(conveyorId);
 
         Conveyor c = getConveyorById(conveyorId);
+        if (!c.isActive()) {
+            throw new IllegalStateException("Conveyor is inactive.");
+        }
         if (c.getStatus() != ConveyorStatus.Paused) {
             throw new IllegalStateException("Restart is allowed only from PAUSED.");
         }
@@ -246,6 +317,9 @@ public class ConveyorManagementController {
         requirePositiveId(conveyorId);
 
         Conveyor c = getConveyorById(conveyorId);
+        if (!c.isActive()) {
+            throw new IllegalStateException("Conveyor is inactive.");
+        }
         if (c.getStatus() != ConveyorStatus.Operational) {
             throw new IllegalStateException("Turn OFF is allowed only from OPERATION (Operational).");
         }
@@ -272,7 +346,7 @@ public class ConveyorManagementController {
     // =========================
 
     private void updateConveyorMaxWeight_DBOnly(int conveyorId, int newWeight) {
-        String sql = "UPDATE Conveyor SET [MaxWeight]=? WHERE [ID]=?";
+        String sql = "UPDATE Conveyor SET [MaxWeight]=? WHERE [ID]=? AND [isActive]=True";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -295,6 +369,10 @@ public class ConveyorManagementController {
      * - LastStatus never becomes Off/Paused (DB stores only Testing/Operational)
      */
     private void updateConveyorStatus_WithHistoryRule(int conveyorId, ConveyorStatus newStatus) {
+        if (isConveyorInactive(conveyorId)) {
+            throw new IllegalStateException("Conveyor is inactive.");
+        }
+
         String newText = (newStatus == null ? null : newStatus.name());
 
         String sql =
@@ -307,7 +385,7 @@ public class ConveyorManagementController {
                 "       [LastStatus] " +
                 "  ), " +
                 "  [Status] = ? " +
-                "WHERE [ID] = ?";
+                "WHERE [ID] = ? AND [isActive]=True";
 
         try (Connection conn = db.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -328,7 +406,7 @@ public class ConveyorManagementController {
         ensureDb();
 
         String sql =
-                "SELECT [ID],[ParkingLotID],[Floor],[X],[Y],[MaxWeight],[Status],[LastStatus] " +
+                "SELECT [ID],[ParkingLotID],[Floor],[X],[Y],[MaxWeight],[Status],[LastStatus],[isActive] " +
                 "FROM Conveyor WHERE [ID]=?";
 
         try (Connection conn = db.open();
@@ -350,11 +428,30 @@ public class ConveyorManagementController {
                 ConveyorStatus status = parseStatus(rs.getString("Status"));
                 ConveyorLastStatus lastStatus = safeParseLastStatus(rs.getString("LastStatus"));
 
-                return new Conveyor(id, lotId, floor, x, y, maxW, status, lastStatus);
+                boolean isActive = true;
+                try { isActive = rs.getBoolean("isActive"); } catch (Exception ignore) {}
+
+                return new Conveyor(id, lotId, floor, x, y, maxW, status, lastStatus, isActive);
             }
 
         } catch (SQLException e) {
             throw new RuntimeException("Failed to read conveyor: " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isConveyorInactive(int id) {
+        String sql = "SELECT [isActive] FROM Conveyor WHERE [ID]=?";
+        try (Connection conn = db.open();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return false;
+                boolean active = true;
+                try { active = rs.getBoolean("isActive"); } catch (Exception ignore) {}
+                return !active;
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to check conveyor active flag: " + e.getMessage(), e);
         }
     }
 

@@ -21,9 +21,10 @@ import java.util.List;
  * - כתובת התפצלה לשני שדות: Street + Number
  * - נוספה בדיקת קלט למספר (לא לקרוס אם לא int)
  *
- * חשוב:
- * - לא שינינו שום מסכים אחרים.
- * - הטבלה עדיין מציגה "Address" כמחרוזת מאוחדת (getAddress()).
+ * שינוי נוסף:
+ * - Soft delete: Deactivate instead of DELETE
+ * - Default: show only ACTIVE parking lots
+ * - Optional: checkbox "Show inactive"
  */
 public class ParkingLotDashboardUI extends JFrame {
 
@@ -41,7 +42,6 @@ public class ParkingLotDashboardUI extends JFrame {
     private JTextField idField;
     private JTextField nameField;
 
-    // ✅ NEW split address fields
     private JTextField streetField;
     private JTextField numberField;
 
@@ -51,6 +51,9 @@ public class ParkingLotDashboardUI extends JFrame {
     // search
     private JTextField searchIdField;
     private JButton searchBtn;
+
+    // NEW
+    private JCheckBox showInactiveLots;
 
     // secondary buttons
     private JButton conveyorBtn;
@@ -92,6 +95,11 @@ public class ParkingLotDashboardUI extends JFrame {
         searchBtn = new JButton("Find");
         searchBtn.addActionListener(e -> findParkingLotById());
         searchPanel.add(searchBtn);
+
+        // ✅ NEW checkbox
+        showInactiveLots = new JCheckBox("Show inactive");
+        showInactiveLots.addActionListener(e -> loadParkingLots());
+        searchPanel.add(showInactiveLots);
 
         JPanel secondaryPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         conveyorBtn = new JButton("Conveyors");
@@ -135,7 +143,6 @@ public class ParkingLotDashboardUI extends JFrame {
 
         nameField = new JTextField();
 
-        // ✅ NEW fields
         streetField = new JTextField();
         numberField = new JTextField();
 
@@ -168,8 +175,8 @@ public class ParkingLotDashboardUI extends JFrame {
         JButton updateBtn = new JButton("Update");
         updateBtn.addActionListener(e -> updateParkingLot());
 
-        JButton deleteBtn = new JButton("Delete");
-        deleteBtn.addActionListener(e -> deleteParkingLot());
+        JButton deleteBtn = new JButton("Deactivate");
+        deleteBtn.addActionListener(e -> deactivateParkingLot());
 
         JButton reloadBtn = new JButton("Reload");
         reloadBtn.addActionListener(e -> loadParkingLots());
@@ -199,12 +206,15 @@ public class ParkingLotDashboardUI extends JFrame {
 
     private void loadParkingLots() {
         model.setRowCount(0);
-        List<ParkingLot> lots = parkingLotController.getAllParkingLots();
+
+        boolean includeInactive = showInactiveLots != null && showInactiveLots.isSelected();
+        List<ParkingLot> lots = parkingLotController.getAllParkingLots(includeInactive);
+
         for (ParkingLot p : lots) {
             model.addRow(new Object[]{
                     p.getId(),
                     p.getName(),
-                    p.getAddress(), // stays combined in table
+                    p.getAddress(),
                     p.getCity(),
                     p.getAvailableSpaces()
             });
@@ -216,7 +226,13 @@ public class ParkingLotDashboardUI extends JFrame {
         if (row < 0) return;
 
         int id = (int) model.getValueAt(row, 0);
-        selectedParkingLot = parkingLotController.getParkingLot(id);
+
+        try {
+            selectedParkingLot = parkingLotController.getParkingLot(id);
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
 
         idField.setText(String.valueOf(selectedParkingLot.getId()));
         nameField.setText(selectedParkingLot.getName());
@@ -232,6 +248,15 @@ public class ParkingLotDashboardUI extends JFrame {
         try {
             int id = Integer.parseInt(searchIdField.getText().trim());
             ParkingLot p = parkingLotController.getParkingLot(id);
+
+            // if lot is inactive and we are not showing inactive -> show a friendly message
+            if (!p.isActive() && (showInactiveLots == null || !showInactiveLots.isSelected())) {
+                JOptionPane.showMessageDialog(this, "Parking lot is inactive. Enable 'Show inactive' to view it.");
+                return;
+            }
+
+            // refresh list according to checkbox (so it appears if needed)
+            loadParkingLots();
 
             for (int i = 0; i < model.getRowCount(); i++) {
                 if ((int) model.getValueAt(i, 0) == id) {
@@ -254,12 +279,25 @@ public class ParkingLotDashboardUI extends JFrame {
             Integer number = parsePositiveIntOrShow(numberField, "Number");
             if (number == null) return;
 
+            City city = (City) cityCombo.getSelectedItem();
+            if (city == null) {
+                JOptionPane.showMessageDialog(this, "City is required.", "Validation", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+
+            // available spaces is read-only; if empty -> default 0
+            int spaces = 0;
+            String rawSpaces = spacesField.getText() == null ? "" : spacesField.getText().trim();
+            if (!rawSpaces.isEmpty()) {
+                try { spaces = Integer.parseInt(rawSpaces); } catch (Exception ignore) { spaces = 0; }
+            }
+
             parkingLotController.addParkingLot(
                     nameField.getText(),
                     streetField.getText(),
                     number,
-                    (City) cityCombo.getSelectedItem(),
-                    Integer.parseInt(spacesField.getText())
+                    city,
+                    spaces
             );
             loadParkingLots();
 
@@ -274,16 +312,27 @@ public class ParkingLotDashboardUI extends JFrame {
             return;
         }
 
+        if (!selectedParkingLot.isActive()) {
+            JOptionPane.showMessageDialog(this, "Parking lot is inactive and cannot be updated.");
+            return;
+        }
+
         try {
             Integer number = parsePositiveIntOrShow(numberField, "Number");
             if (number == null) return;
+
+            City city = (City) cityCombo.getSelectedItem();
+            if (city == null) {
+                JOptionPane.showMessageDialog(this, "City is required.", "Validation", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
 
             parkingLotController.updateParkingLot(
                     selectedParkingLot.getId(),
                     nameField.getText(),
                     streetField.getText(),
                     number,
-                    (City) cityCombo.getSelectedItem()
+                    city
             );
             JOptionPane.showMessageDialog(this, "Parking lot updated successfully.");
             loadParkingLots();
@@ -293,23 +342,28 @@ public class ParkingLotDashboardUI extends JFrame {
         }
     }
 
-    private void deleteParkingLot() {
+    private void deactivateParkingLot() {
         if (selectedParkingLot == null) return;
 
+        if (!selectedParkingLot.isActive()) {
+            JOptionPane.showMessageDialog(this, "Parking lot is already inactive.");
+            return;
+        }
+
         if (JOptionPane.showConfirmDialog(this,
-                "Delete this parking lot?",
+                "Deactivate this parking lot?",
                 "Confirm",
                 JOptionPane.YES_NO_OPTION) == JOptionPane.YES_OPTION) {
 
-            parkingLotController.deleteParkingLot(selectedParkingLot.getId());
-            loadParkingLots();
+            try {
+                parkingLotController.deleteParkingLot(selectedParkingLot.getId()); // soft delete
+                loadParkingLots();
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, ex.getMessage(), "Error", JOptionPane.ERROR_MESSAGE);
+            }
         }
     }
 
-    /**
-     * בדיקת קלט נקודתית:
-     * - אם לא מספר → הודעה למשתמש ולא לקרוס
-     */
     private Integer parsePositiveIntOrShow(JTextField tf, String fieldName) {
         String raw = tf.getText() == null ? "" : tf.getText().trim();
         if (raw.isEmpty()) {
@@ -331,6 +385,11 @@ public class ParkingLotDashboardUI extends JFrame {
     private void openConveyorScreen() {
         if (selectedParkingLot == null) {
             JOptionPane.showMessageDialog(this, "Select a parking lot first.");
+            return;
+        }
+
+        if (!selectedParkingLot.isActive()) {
+            JOptionPane.showMessageDialog(this, "Parking lot is inactive.");
             return;
         }
 
