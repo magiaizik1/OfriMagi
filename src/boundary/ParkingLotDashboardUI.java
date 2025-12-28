@@ -1,8 +1,10 @@
 package boundary;
 
+import control.AccessDb;
 import control.CityManagementController;
 import control.ConveyorManagementController;
 import control.ParkingLotManagementController;
+import control.ParkingSessionManagementController;
 import control.PriceHistoryManagementController;
 import control.PriceListManagementController;
 import entity.City;
@@ -25,8 +27,14 @@ import java.util.List;
  * - Soft delete: Deactivate instead of DELETE
  * - Default: show only ACTIVE parking lots
  * - Optional: checkbox "Show inactive"
+ *
+ * תיקון נוסף (Assignment 3):
+ * - הוספת מעבר למסך Parking Sessions דרך ParkingSessionManagementUI
+ * - שימוש באותו AccessDb קיים של הפרויקט (לא ליצור חיבור חדש)
  */
 public class ParkingLotDashboardUI extends JFrame {
+
+    private final AccessDb db;
 
     private final ParkingLotManagementController parkingLotController;
     private final CityManagementController cityController;
@@ -34,6 +42,7 @@ public class ParkingLotDashboardUI extends JFrame {
     private final PriceHistoryManagementController priceHistoryController;
     private final PriceListManagementController priceListController;
 
+    private JButton parkingSessionBtn;
     private JTable table;
     private DefaultTableModel model;
 
@@ -61,12 +70,14 @@ public class ParkingLotDashboardUI extends JFrame {
     private JButton priceListBtn;
 
     public ParkingLotDashboardUI(
+            AccessDb db,
             ParkingLotManagementController parkingLotController,
             CityManagementController cityController,
             ConveyorManagementController conveyorController,
             PriceHistoryManagementController priceHistoryController,
             PriceListManagementController priceListController
     ) {
+        this.db = db;
         this.parkingLotController = parkingLotController;
         this.cityController = cityController;
         this.conveyorController = conveyorController;
@@ -105,14 +116,17 @@ public class ParkingLotDashboardUI extends JFrame {
         conveyorBtn = new JButton("Conveyors");
         priceHistoryBtn = new JButton("Price History");
         priceListBtn = new JButton("Import Price List");
+        parkingSessionBtn = new JButton("Parking Sessions");
 
         conveyorBtn.addActionListener(e -> openConveyorScreen());
         priceHistoryBtn.addActionListener(e -> openPriceHistoryScreen());
         priceListBtn.addActionListener(e -> openPriceListScreen());
+        parkingSessionBtn.addActionListener(e -> openParkingSessionScreen());
 
         secondaryPanel.add(conveyorBtn);
         secondaryPanel.add(priceHistoryBtn);
         secondaryPanel.add(priceListBtn);
+        secondaryPanel.add(parkingSessionBtn);
 
         JPanel north = new JPanel(new BorderLayout());
         north.add(searchPanel, BorderLayout.WEST);
@@ -426,6 +440,32 @@ public class ParkingLotDashboardUI extends JFrame {
     private void openPriceListScreen() {
         JFrame f = new JFrame("Import Price List");
         f.setContentPane(new PriceListImportViewUI(priceListController));
+        f.pack();
+        f.setLocationRelativeTo(this);
+        f.setVisible(true);
+    }
+
+    /**
+     * Opens the Parking Sessions management screen for the currently selected ParkingLot.
+     * Uses the existing AccessDb instance of the project (same DB connection strategy).
+     */
+    private void openParkingSessionScreen() {
+        if (selectedParkingLot == null) {
+            JOptionPane.showMessageDialog(this, "Select a parking lot first.");
+            return;
+        }
+
+        ParkingSessionManagementUI ui =
+                new ParkingSessionManagementUI(
+                        new ParkingSessionManagementController(db),
+                        priceListController,
+                        priceHistoryController
+                );
+
+        ui.setParkingLotId(selectedParkingLot.getId());
+
+        JFrame f = new JFrame("Parking Sessions – Lot " + selectedParkingLot.getId());
+        f.setContentPane(ui);
         f.pack();
         f.setLocationRelativeTo(this);
         f.setVisible(true);

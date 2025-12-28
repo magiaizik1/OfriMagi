@@ -2,12 +2,14 @@ package entity;
 
 public class PriceList {
 
-    private final int id;          // ID ייחודי – לא ניתן לשינוי
+    private  int id;          // ID ייחודי – לא ניתן לשינוי
     private int year;
     private double firstHourPrice;
     private double additionalHourPrice;
     private double fullDayPrice;
 
+    public PriceList() {
+    }
     public PriceList(
             int id,
             int year,
@@ -21,7 +23,8 @@ public class PriceList {
         this.additionalHourPrice = additionalHourPrice;
         this.fullDayPrice = fullDayPrice;
     }
-
+    
+    
     public int getId() {
         return id;
     }
