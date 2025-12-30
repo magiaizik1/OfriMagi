@@ -8,15 +8,6 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * ParkingSessionManagementController
- * אחראי על:
- * - פתיחת סשן חניה
- * - סיום סשן
- * - שליפת סשנים לפי חניון
- * - חישוב משך חניה
- * - יצירת קבלה
- */
 public class ParkingSessionManagementController {
 
     private final AccessDb db;
@@ -25,7 +16,7 @@ public class ParkingSessionManagementController {
         this.db = db;
     }
 
-    // ================= פתיחת חניה =================
+    // ================= Start Parking Session =================
     public void startParkingSession(int parkingLotId, int vehicleId, int spotId, int conveyorId) throws Exception {
 
         String sql =
@@ -44,7 +35,7 @@ public class ParkingSessionManagementController {
         }
     }
 
-    // ================= סיום חניה =================
+    // ================= End Parking Session =================
     public void endParkingSession(int sessionId) throws Exception {
 
         String sql =
@@ -59,7 +50,7 @@ public class ParkingSessionManagementController {
         }
     }
 
-    // ================= שליפת סשנים לפי חניון =================
+    // ================= Sessions by lot (EXISTING UI – 6 columns) =================
     public List<Object[]> getSessionsByParkingLot(int parkingLotId) {
 
         List<Object[]> list = new ArrayList<>();
@@ -72,69 +63,137 @@ public class ParkingSessionManagementController {
              PreparedStatement ps = c.prepareStatement(sql)) {
 
             ps.setInt(1, parkingLotId);
-            ResultSet rs = ps.executeQuery();
 
-            while (rs.next()) {
-                list.add(new Object[]{
-                        rs.getInt("ID"),
-                        rs.getTimestamp("startTime"),
-                        rs.getTimestamp("endTime"),
-                        rs.getInt("vehicleID"),
-                        rs.getInt("parkingSpotID"),
-                        rs.getInt("conveyorID")
-                });
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new Object[]{
+                            rs.getInt("ID"),
+                            rs.getTimestamp("startTime"),
+                            rs.getTimestamp("endTime"),
+                            rs.getInt("vehicleID"),
+                            rs.getObject("parkingSpotID"),
+                            rs.getObject("conveyorID")
+                    });
+                }
             }
+
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+
         return list;
     }
 
-    // ================= משך חניה בדקות =================
-    public long getParkingDurationMinutes(int sessionId) {
+    // ================= Sessions by lot (MANAGER VIEW) =================
+    // Columns:
+    // ID | Start | End | Vehicle | Spot | Conveyor | Amount | Rate
+    public List<Object[]> getSessionsByParkingLotForManager(int parkingLotId) {
 
-        String sql = "SELECT startTime, endTime FROM ParkingSession WHERE ID=?";
+        List<Object[]> list = new ArrayList<>();
+
+        String sql =
+                "SELECT s.ID, s.startTime, s.endTime, s.vehicleID, s.parkingSpotID, s.conveyorID, " +
+                "       r.finalAmount, r.appliedRate " +
+                "FROM ParkingSession s " +
+                "LEFT JOIN Receipt r ON r.parkingsessionID = s.ID " +
+                "WHERE s.parkingLotID=? " +
+                "ORDER BY s.startTime DESC";
 
         try (Connection c = db.open();
              PreparedStatement ps = c.prepareStatement(sql)) {
 
-            ps.setInt(1, sessionId);
-            ResultSet rs = ps.executeQuery();
+            ps.setInt(1, parkingLotId);
 
-            if (!rs.next())
-                throw new RuntimeException("Session not found");
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
 
-            LocalDateTime start = rs.getTimestamp("startTime").toLocalDateTime();
-            Timestamp endTs = rs.getTimestamp("endTime");
+                    Timestamp startTs = rs.getTimestamp("startTime");
+                    Timestamp endTs = rs.getTimestamp("endTime");
 
-            if (endTs == null)
-                throw new RuntimeException("Session still active");
+                    Double amount = null;
+                    String rate = rs.getString("appliedRate");
 
-            LocalDateTime end = endTs.toLocalDateTime();
-            return Duration.between(start, end).toMinutes();
+                    // אם יש Receipt – לוקחים ממנו
+                    Object amtObj = rs.getObject("finalAmount");
+                    if (amtObj != null) {
+                        amount = toDouble(amtObj);
+                    }
+
+                    // אם אין Receipt אבל הסשן הסתיים – מחשבים להצגה בלבד
+                    if (amount == null && endTs != null) {
+
+                        PriceList priceList =
+                                getCurrentPriceListAt(c, parkingLotId, endTs.toLocalDateTime());
+
+                        if (priceList != null) {
+                            long minutes =
+                                    Duration.between(
+                                            startTs.toLocalDateTime(),
+                                            endTs.toLocalDateTime()
+                                    ).toMinutes();
+
+                            CalcResult calc =
+                                    calculateAmountAndRate(minutes, priceList);
+
+                            amount = calc.amount;
+                            rate = calc.rate;
+                        } else {
+                            amount = null;
+                            rate = "N/A";
+                        }
+                    }
+
+                    list.add(new Object[]{
+                            rs.getInt("ID"),
+                            startTs,
+                            endTs,
+                            rs.getInt("vehicleID"),
+                            rs.getObject("parkingSpotID"),
+                            rs.getObject("conveyorID"),
+                            amount,
+                            rate
+                    });
+                }
+            }
+
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+
+        return list;
     }
 
-    // ================= יצירת קבלה =================
+    // ================= Receipt =================
     public void generateReceipt(int sessionId) {
 
         try (Connection c = db.open()) {
 
+            if (receiptExists(c, sessionId)) {
+                throw new RuntimeException("Receipt already exists");
+            }
+
             ParkingSessionData data = getSessionData(c, sessionId);
-            PriceList price = getCurrentPriceList(c, data.parkingLotId);
+            if (data.end == null)
+                throw new RuntimeException("Session still active");
+
+            PriceList price =
+                    getCurrentPriceListAt(c, data.parkingLotId, data.end);
+
+            if (price == null)
+                throw new RuntimeException("No active price list");
 
             long minutes = Duration.between(data.start, data.end).toMinutes();
-            double amount = calculateAmount(minutes, price);
+            CalcResult calc = calculateAmountAndRate(minutes, price);
 
             String sql =
-                    "INSERT INTO Receipt(parkingSessionID, amount, createdAt) VALUES(?,?,?)";
+                    "INSERT INTO Receipt(parkingsessionID, finalAmount, paymentDate, appliedRate) " +
+                    "VALUES(?,?,?,?)";
 
             try (PreparedStatement ps = c.prepareStatement(sql)) {
                 ps.setInt(1, sessionId);
-                ps.setDouble(2, amount);
+                ps.setDouble(2, calc.amount);
                 ps.setTimestamp(3, Timestamp.valueOf(LocalDateTime.now()));
+                ps.setString(4, calc.rate);
                 ps.executeUpdate();
             }
 
@@ -143,63 +202,114 @@ public class ParkingSessionManagementController {
         }
     }
 
-    // ================= חישוב תשלום =================
-    private double calculateAmount(long minutes, PriceList p) {
+    // ================= Helpers =================
+
+    private boolean receiptExists(Connection c, int sessionId) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM Receipt WHERE parkingsessionID=?";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1) > 0;
+            }
+        }
+    }
+
+    private ParkingSessionData getSessionData(Connection c, int id) throws SQLException {
+
+        String sql = "SELECT startTime, endTime, parkingLotID FROM ParkingSession WHERE ID=?";
+
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, id);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) throw new SQLException("Session not found");
+
+                LocalDateTime start = rs.getTimestamp("startTime").toLocalDateTime();
+                Timestamp endTs = rs.getTimestamp("endTime");
+                LocalDateTime end = (endTs == null) ? null : endTs.toLocalDateTime();
+
+                return new ParkingSessionData(start, end, rs.getInt("parkingLotID"));
+            }
+        }
+    }
+
+    private PriceList getCurrentPriceListAt(Connection c, int parkingLotId, LocalDateTime at) throws SQLException {
+
+        String sql =
+                "SELECT TOP 1 p.ID, p.year, p.firstHourPrice, p.additionalHourPrice, p.fullDayPrice " +
+                "FROM PriceList p " +
+                "JOIN PriceHistory h ON p.ID = h.priceListID " +
+                "WHERE h.parkingLotID=? " +
+                "AND ? >= h.effectiveFrom " +
+                "AND (h.effectiveTo IS NULL OR ? <= h.effectiveTo) " +
+                "ORDER BY h.effectiveFrom DESC";
+
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setInt(1, parkingLotId);
+            ps.setTimestamp(2, Timestamp.valueOf(at));
+            ps.setTimestamp(3, Timestamp.valueOf(at));
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+
+                return new PriceList(
+                        rs.getInt("ID"),
+                        rs.getInt("year"),
+                        toDouble(rs.getObject("firstHourPrice")),
+                        toDouble(rs.getObject("additionalHourPrice")),
+                        toDouble(rs.getObject("fullDayPrice"))
+                );
+            }
+        }
+    }
+
+    private double toDouble(Object o) {
+        if (o == null) return 0.0;
+        if (o instanceof java.math.BigDecimal)
+            return ((java.math.BigDecimal) o).doubleValue();
+        if (o instanceof Number)
+            return ((Number) o).doubleValue();
+        return Double.parseDouble(o.toString());
+    }
+
+    private CalcResult calculateAmountAndRate(long minutes, PriceList p) {
 
         long hours = (long) Math.ceil(minutes / 60.0);
 
         if (hours <= 1)
-            return p.getFirstHourPrice();
+            return new CalcResult(p.getFirstHourPrice(), "FirstHour");
 
         if (hours < 24)
-            return p.getFirstHourPrice() +
-                    (hours - 1) * p.getAdditionalHourPrice();
+            return new CalcResult(
+                    p.getFirstHourPrice() + (hours - 1) * p.getAdditionalHourPrice(),
+                    "AdditionalHours"
+            );
 
-        return p.getFullDayPrice();
+        return new CalcResult(p.getFullDayPrice(), "FullDay");
     }
 
-    // ================= שליפת נתוני סשן =================
-    private ParkingSessionData getSessionData(Connection c, int id) throws SQLException {
+    // ===== inner classes =====
+    private static class ParkingSessionData {
+        LocalDateTime start;
+        LocalDateTime end;
+        int parkingLotId;
 
-        String sql = "SELECT startTime,endTime,parkingLotID FROM ParkingSession WHERE ID=?";
-
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, id);
-            ResultSet rs = ps.executeQuery();
-            rs.next();
-
-            return new ParkingSessionData(
-                    rs.getTimestamp("startTime").toLocalDateTime(),
-                    rs.getTimestamp("endTime").toLocalDateTime(),
-                    rs.getInt("parkingLotID")
-            );
+        ParkingSessionData(LocalDateTime start, LocalDateTime end, int parkingLotId) {
+            this.start = start;
+            this.end = end;
+            this.parkingLotId = parkingLotId;
         }
     }
 
-    // ================= שליפת מחירון פעיל =================
-    private PriceList getCurrentPriceList(Connection c, int parkingLotId) throws SQLException {
+    private static class CalcResult {
+        double amount;
+        String rate;
 
-        String sql =
-                "SELECT TOP 1 p.* FROM PriceList p " +
-                "JOIN PriceHistory h ON p.ID=h.priceListID " +
-                "WHERE h.parkingLotID=? ORDER BY h.effectiveFrom DESC";
-
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, parkingLotId);
-            ResultSet rs = ps.executeQuery();
-            rs.next();
-
-            return new PriceList(
-                    rs.getInt("ID"),
-                    rs.getInt("year"),
-                    rs.getDouble("firstHourPrice"),
-                    rs.getDouble("additionalHourPrice"),
-                    rs.getDouble("fullDayPrice")
-            );
+        CalcResult(double amount, String rate) {
+            this.amount = amount;
+            this.rate = rate;
         }
     }
-
-    private record ParkingSessionData(LocalDateTime start,
-                                      LocalDateTime end,
-                                      int parkingLotId) {}
 }
