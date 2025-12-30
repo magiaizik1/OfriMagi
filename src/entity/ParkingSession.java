@@ -3,45 +3,116 @@ package entity;
 import java.time.LocalDateTime;
 
 /**
- * ParkingSession
- * מייצג חניית רכב אחת מהכניסה ועד היציאה.
- * תואם 1:1 לטבלת ParkingSession ב-Access.
+ * Represents a single parking session of a vehicle in a parking lot.
+ * A parking session starts when the vehicle enters the parking lot
+ * and ends after payment and exit.
  */
 public class ParkingSession {
 
-    private final int id;              // ID AutoNumber
-    private LocalDateTime startTime;   // startTime
-    private LocalDateTime endTime;     // endTime (יכול להיות null)
-    private int parkingLotID;          // FK -> ParkingLot.ID
-    private int vehicleID;             // FK -> Vehicle.ID
-    private int parkingSpotID;         // FK -> ParkingSpot.ID
-    private Integer conveyorID;        // FK -> Conveyor.ID (nullable)
+    private int id;
 
-    public ParkingSession(int id,
-                          LocalDateTime startTime,
-                          LocalDateTime endTime,
-                          int parkingLotID,
-                          int vehicleID,
-                          int parkingSpotID,
-                          Integer conveyorID) {
+    private int vehicleId;
+    private int parkingLotId;
 
-        this.id = id;
-        this.startTime = startTime;
-        this.endTime = endTime;
-        this.parkingLotID = parkingLotID;
-        this.vehicleID = vehicleID;
-        this.parkingSpotID = parkingSpotID;
-        this.conveyorID = conveyorID;
+    /**
+     * The parking spot where the vehicle is parked.
+     * NULL while the vehicle is not yet parked.
+     */
+    private Integer parkingSpotId;
+
+    /**
+     * The conveyor currently handling the vehicle.
+     * NULL when the vehicle is not on a conveyor.
+     */
+    private Integer conveyorId;
+
+    private LocalDateTime startTime;
+    private LocalDateTime endTime;
+
+    /**
+     * Represents the current state of the parking session.
+     * This field allows the system to know at each moment
+     * where the vehicle is and what stage it is in.
+     *
+     * Possible values:
+     * ARRIVED_AT_GATE
+     * WAITING_FOR_DETAILS
+     * WAITING_FOR_CONVEYOR
+     * MOVING_TO_PARKING
+     * PARKED
+     * MOVING_TO_EXIT
+     * WAITING_FOR_PAYMENT
+     * COMPLETED
+     */
+    private String state;
+
+    public ParkingSession() {}
+
+    // ---------- Getters ----------
+
+    public int getId() {
+        return id;
     }
 
-    public int getId() { return id; }
-    public LocalDateTime getStartTime() { return startTime; }
-    public LocalDateTime getEndTime() { return endTime; }
-    public int getParkingLotID() { return parkingLotID; }
-    public int getVehicleID() { return vehicleID; }
-    public int getParkingSpotID() { return parkingSpotID; }
-    public Integer getConveyorID() { return conveyorID; }
+    public int getVehicleId() {
+        return vehicleId;
+    }
 
-    public void setEndTime(LocalDateTime endTime) { this.endTime = endTime; }
-    public void setConveyorID(Integer conveyorID) { this.conveyorID = conveyorID; }
+    public int getParkingLotId() {
+        return parkingLotId;
+    }
+
+    public Integer getParkingSpotId() {
+        return parkingSpotId;
+    }
+
+    public Integer getConveyorId() {
+        return conveyorId;
+    }
+
+    public LocalDateTime getStartTime() {
+        return startTime;
+    }
+
+    public LocalDateTime getEndTime() {
+        return endTime;
+    }
+
+    public String getState() {
+        return state;
+    }
+
+    // ---------- Setters ----------
+
+    public void setId(int id) {
+        this.id = id;
+    }
+
+    public void setVehicleId(int vehicleId) {
+        this.vehicleId = vehicleId;
+    }
+
+    public void setParkingLotId(int parkingLotId) {
+        this.parkingLotId = parkingLotId;
+    }
+
+    public void setParkingSpotId(Integer parkingSpotId) {
+        this.parkingSpotId = parkingSpotId;
+    }
+
+    public void setConveyorId(Integer conveyorId) {
+        this.conveyorId = conveyorId;
+    }
+
+    public void setStartTime(LocalDateTime startTime) {
+        this.startTime = startTime;
+    }
+
+    public void setEndTime(LocalDateTime endTime) {
+        this.endTime = endTime;
+    }
+
+    public void setState(String state) {
+        this.state = state;
+    }
 }

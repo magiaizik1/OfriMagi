@@ -1,61 +1,71 @@
 package boundary;
 
-import control.AccessDb;
-import control.CityManagementController;
-import control.ConveyorManagementController;
-import control.ParkingLotManagementController;
-import control.PriceHistoryManagementController;
-import control.PriceListManagementController;
+import control.*;
 
 import javax.swing.*;
-import java.sql.Connection;
+import java.awt.*;
 
-/**
- * Main entry point of ParkWise system.
- * Creates a single AccessDb instance and passes it to all controllers and UIs.
- */
 public class Main {
 
     public static void main(String[] args) {
 
         SwingUtilities.invokeLater(() -> {
 
-            // Single DB instance for whole system
-            AccessDb db = new AccessDb("db/parkwise_OfriMagi.accdb");
+            // ===== DB =====
+        	AccessDb db = new AccessDb("db/parkwise_OfriMagi.accdb"); 
 
-            // Test DB connection on startup
-            try (Connection c = db.open()) {
-                // OK
-            } catch (Exception e) {
-                JOptionPane.showMessageDialog(null,
-                        "Database connection failed:\n" + e.getMessage(),
-                        "DB Error",
-                        JOptionPane.ERROR_MESSAGE);
-                return;
-            }
+            // ===== Controllers (קיימים בפרויקט) =====
+            ParkingLotManagementController parkingLotController =
+                    new ParkingLotManagementController(db);
+            CityManagementController cityController =
+                    new CityManagementController(db);
+            ConveyorManagementController conveyorController =
+                    new ConveyorManagementController(db);
+            PriceHistoryManagementController priceHistoryController =
+                    new PriceHistoryManagementController(db);
+            PriceListManagementController priceListController =
+                    new PriceListManagementController(db);
 
-            CityManagementController cityController = new CityManagementController(db);
-            ParkingLotManagementController parkingLotController = new ParkingLotManagementController(db);
-            ConveyorManagementController conveyorController = new ConveyorManagementController(db);
-            PriceListManagementController priceListController = new PriceListManagementController(db);
-            PriceHistoryManagementController priceHistoryController = new PriceHistoryManagementController(db);
+            // ===== Launcher Window =====
+            JFrame frame = new JFrame("ParkWise – Run Interface");
+            frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+            frame.setSize(450, 200);
+            frame.setLocationRelativeTo(null);
+            frame.setLayout(new BorderLayout(10, 10));
 
-            LoginUI loginUI = new LoginUI(() -> {
+            JLabel title = new JLabel("Choose interface to run:", SwingConstants.CENTER);
+            title.setFont(title.getFont().deriveFont(Font.BOLD, 16f));
+            frame.add(title, BorderLayout.NORTH);
 
-                ParkingLotDashboardUI dashboard =
-                        new ParkingLotDashboardUI(
-                                db,                     // <<< חובה!
-                                parkingLotController,
-                                cityController,
-                                conveyorController,
-                                priceHistoryController,
-                                priceListController
-                        );
+            JButton adminBtn = new JButton("Manager / Admin");
+            JButton sensorBtn = new JButton("Gate Sensor (Dummy)");
 
-                dashboard.setVisible(true);
+            // ===== Admin Button =====
+            adminBtn.addActionListener(e -> {
+                new ParkingLotDashboardUI(
+                        db,
+                        parkingLotController,
+                        cityController,
+                        conveyorController,
+                        priceHistoryController,
+                        priceListController
+                ).setVisible(true);
             });
 
-            loginUI.setVisible(true);
+            // ===== Sensor Button =====
+            sensorBtn.addActionListener(e -> {
+                new GateSensorDummyUI(db, parkingLotController)
+                        .setVisible(true);
+            });
+
+            JPanel center = new JPanel(new GridLayout(1, 2, 15, 15));
+            center.setBorder(BorderFactory.createEmptyBorder(30, 20, 30, 20));
+            center.add(adminBtn);
+            center.add(sensorBtn);
+
+            frame.add(center, BorderLayout.CENTER);
+
+            frame.setVisible(true);
         });
     }
 }

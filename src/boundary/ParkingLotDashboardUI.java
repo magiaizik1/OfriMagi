@@ -4,7 +4,6 @@ import control.AccessDb;
 import control.CityManagementController;
 import control.ConveyorManagementController;
 import control.ParkingLotManagementController;
-import control.ParkingSessionManagementController;
 import control.PriceHistoryManagementController;
 import control.PriceListManagementController;
 import entity.City;
@@ -146,8 +145,6 @@ public class ParkingLotDashboardUI extends JFrame {
         add(south, BorderLayout.SOUTH);
     }
 
-    // ===== DATA =====
-
     private void loadCities() {
         cityCombo.removeAllItems();
         for (City c : cityController.getAllCities()) cityCombo.addItem(c);
@@ -197,18 +194,13 @@ public class ParkingLotDashboardUI extends JFrame {
     }
 
     // ===== PARKING SESSIONS – VIEW ONLY =====
-
     private void openParkingSessionScreenViewOnly() {
         if (selectedParkingLot == null) {
             JOptionPane.showMessageDialog(this, "Select a parking lot first.");
             return;
         }
 
-        ParkingSessionViewUI ui =
-                new ParkingSessionViewUI(
-                        new ParkingSessionManagementController(db)
-                );
-
+        ParkingSessionViewUI ui = new ParkingSessionViewUI(db);
         ui.setParkingLotId(selectedParkingLot.getId());
 
         JFrame f = new JFrame("Parking Sessions – Lot " + selectedParkingLot.getId());
@@ -218,7 +210,7 @@ public class ParkingLotDashboardUI extends JFrame {
         f.setVisible(true);
     }
 
-    // ===== STUBS (כמו שהיה אצלך) =====
+    // ===== STUBS =====
     private void openConveyorScreen() {}
     private void openPriceHistoryScreen() {}
     private void openPriceListScreen() {}
