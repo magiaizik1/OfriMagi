@@ -687,4 +687,143 @@ public class ParkingSessionManagementController {
             this.x = x; this.y = y; this.floor = floor;
         }
     }
+ // ==========================================================
+ // ===== EXIT FLOW – FULL IMPLEMENTATION (PER STORY) ========
+ // ==========================================================
+
+ /**
+  * Step 1:
+  * Client requests to end parking (via UI).
+  * System validates session and moves to MOVING_TO_EXIT.
+  */
+ public void requestExit(int sessionId) throws Exception {
+
+     String sql =
+             "UPDATE ParkingSession SET state=? " +
+             "WHERE ID=? AND endTime IS NULL";
+
+     try (Connection c = db.open();
+          PreparedStatement ps = c.prepareStatement(sql)) {
+
+         ps.setString(1, "MOVING_TO_EXIT");
+         ps.setInt(2, sessionId);
+
+         int updated = ps.executeUpdate();
+         if (updated == 0)
+             throw new RuntimeException("Session not found or already completed");
+     }
+ }
+
+ /**
+  * Step 2:
+  * Assign a vacant conveyor to move vehicle from parking to gate.
+  */
+ public void assignConveyorForExit(int sessionId) throws Exception {
+
+     try (Connection c = db.open()) {
+         c.setAutoCommit(false);
+
+         // Load session data
+         String q =
+                 "SELECT parkingLotID, vehicleID " +
+                 "FROM ParkingSession WHERE ID=? AND endTime IS NULL";
+
+         int parkingLotId;
+         int vehicleId;
+
+         try (PreparedStatement ps = c.prepareStatement(q)) {
+             ps.setInt(1, sessionId);
+             try (ResultSet rs = ps.executeQuery()) {
+                 if (!rs.next())
+                     throw new RuntimeException("Active session not found");
+
+                 parkingLotId = rs.getInt("parkingLotID");
+                 vehicleId = rs.getInt("vehicleID");
+             }
+         }
+
+         // Get vehicle weight
+         double weight;
+         try (PreparedStatement ps =
+                      c.prepareStatement("SELECT weight FROM Vehicle WHERE ID=?")) {
+             ps.setInt(1, vehicleId);
+             try (ResultSet rs = ps.executeQuery()) {
+                 rs.next();
+                 weight = rs.getDouble(1);
+             }
+         }
+
+         // Find available conveyor
+         Integer conveyorId =
+                 findAvailableConveyorId(c, parkingLotId, weight);
+
+         if (conveyorId == null)
+             throw new RuntimeException("No available conveyor for exit");
+
+         // Assign conveyor
+         setConveyorLastStatus(c, conveyorId, "BUSY");
+
+         try (PreparedStatement ps =
+                      c.prepareStatement(
+                              "UPDATE ParkingSession SET conveyorID=?, state=? WHERE ID=?")) {
+             ps.setInt(1, conveyorId);
+             ps.setString(2, "MOVING_TO_EXIT");
+             ps.setInt(3, sessionId);
+             ps.executeUpdate();
+         }
+
+         c.commit();
+     }
+ }
+
+ /**
+  * Step 3:
+  * Conveyor finished moving vehicle to gate.
+  * System waits for payment.
+  */
+ public void markArrivedAtGate(int sessionId) throws Exception {
+
+     String sql =
+             "UPDATE ParkingSession SET state=? " +
+             "WHERE ID=? AND endTime IS NULL";
+
+     try (Connection c = db.open();
+          PreparedStatement ps = c.prepareStatement(sql)) {
+
+         ps.setString(1, "WAITING_FOR_PAYMENT");
+         ps.setInt(2, sessionId);
+         ps.executeUpdate();
+     }
+ }
+
+ /**
+  * Step 4:
+  * Payment approved externally → session completed, conveyor released.
+  */
+ public void confirmPaymentAndExit(int sessionId) throws Exception {
+
+     try (Connection c = db.open()) {
+         c.setAutoCommit(false);
+
+         Integer conveyorId = getActiveSessionConveyorId(c, sessionId);
+
+         // End session
+         try (PreparedStatement ps =
+                      c.prepareStatement(
+                              "UPDATE ParkingSession SET endTime=?, state=? WHERE ID=?")) {
+             ps.setTimestamp(1, Timestamp.valueOf(LocalDateTime.now()));
+             ps.setString(2, "COMPLETED");
+             ps.setInt(3, sessionId);
+             ps.executeUpdate();
+         }
+
+         // Release conveyor
+         if (conveyorId != null) {
+             setConveyorLastStatus(c, conveyorId, "AVAILABLE");
+         }
+
+         c.commit();
+     }
+ }
+
 }

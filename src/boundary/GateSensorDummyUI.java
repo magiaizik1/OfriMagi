@@ -10,11 +10,10 @@ import java.awt.*;
 import java.time.LocalDateTime;
 import java.util.List;
 
-public class GateSensorDummyUI extends JFrame {
+public class GateSensorDummyUI extends JFrame implements GateSensor {
 
-    private final AccessDb db;
-    private final ParkingLotManagementController lotController;
     private final ParkingSessionManagementController sessionController;
+    private final ParkingLotManagementController lotController;
 
     private JComboBox<ParkingLot> lotCombo;
     private JButton simulateBtn;
@@ -24,7 +23,6 @@ public class GateSensorDummyUI extends JFrame {
             AccessDb db,
             ParkingLotManagementController lotController
     ) {
-        this.db = db;
         this.lotController = lotController;
         this.sessionController = new ParkingSessionManagementController(db);
 
@@ -36,6 +34,35 @@ public class GateSensorDummyUI extends JFrame {
         initUI();
         loadLots();
     }
+
+    // ======================
+    // === GateSensor API ===
+    // ======================
+
+    @Override
+    public ParkingSessionManagementController.SensorArrivalResult
+    vehicleArrived(int parkingLotId) {
+        try {
+            return sessionController.simulateVehicleArrivalAndPark(parkingLotId);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public void openBarrier() {
+        append("Gate barrier opened.");
+    }
+
+    @Override
+    public void showInstructions() {
+        append("Barrier could not be opened.");
+        append("Please enter personal details and upload vehicle photos.");
+    }
+
+    // ======================
+    // ======= UI ===========
+    // ======================
 
     private void initUI() {
         setLayout(new BorderLayout(10, 10));
@@ -61,7 +88,7 @@ public class GateSensorDummyUI extends JFrame {
 
     private void loadLots() {
         lotCombo.removeAllItems();
-        List<ParkingLot> lots = lotController.getAllParkingLots(true); // לא משנה לך מנהל, רק קריאה
+        List<ParkingLot> lots = lotController.getAllParkingLots(true);
         for (ParkingLot p : lots) lotCombo.addItem(p);
         if (lotCombo.getItemCount() > 0) lotCombo.setSelectedIndex(0);
     }
@@ -81,45 +108,37 @@ public class GateSensorDummyUI extends JFrame {
             @Override
             protected Void doInBackground() {
                 try {
-                    // 1) ניסיון מלא: רכב רנדומלי + מסוע + חניה + יצירת סשן
-                    ParkingSessionManagementController.SensorArrivalResult r =
-                            sessionController.simulateVehicleArrivalAndPark(lot.getId());
+                    var r = vehicleArrived(lot.getId());
 
                     if ("NO_VEHICLE".equals(r.outcome)) {
-                        append("No free vehicle found (all vehicles are in active sessions).");
+                        append("No free vehicle found.");
                         return null;
                     }
 
-                    append("Picked random vehicle: vehicleID=" + r.vehicleId);
+                    append("Picked vehicleID=" + r.vehicleId);
 
                     if ("WAITING_FOR_CONVEYOR".equals(r.outcome)) {
-                        append("No AVAILABLE conveyor in OPERATIONAL state. STATUS: WAITING_FOR_CONVEYOR");
-                        append("UI message: waiting for conveyor...");
+                        append("No AVAILABLE conveyor. STATUS: WAITING_FOR_CONVEYOR");
+                        showInstructions();
                         return null;
                     }
 
                     if ("LOT_FULL".equals(r.outcome)) {
-                        append("No suitable parking spot available. STATUS: LOT_FULL");
-                        append("UI message: parking lot is full.");
-                        append("SIMULATION: SMS sent to customer (lot full / cannot park).");
+                        append("Parking lot is full.");
+                        showInstructions();
                         return null;
                     }
 
-                    // OK
-                    append("Assigned conveyorID=" + r.conveyorId + " (Status=OPERATIONAL, LastStatus=BUSY)");
-                    append("Assigned parkingSpotID=" + r.spotId + " (nearest available & size-compatible)");
-                    append("Created ParkingSession ID=" + r.sessionId + " state=MOVING_TO_PARKING");
+                    append("Assigned conveyorID=" + r.conveyorId);
+                    append("Assigned parkingSpotID=" + r.spotId);
+                    append("Created sessionID=" + r.sessionId);
 
-                    // 2) סימולציה של תנועה (כדי שתראי סטטוס “בזמן אמת”)
-                    append("Conveyor moving vehicle to spot...");
+                    append("Conveyor moving vehicle...");
                     Thread.sleep(2000);
 
-                    // 3) מסיימים חניה: state=PARKED + שחרור מסוע ל-AVAILABLE
                     sessionController.markParkingCompleted(r.sessionId);
-
-                    append("Parking completed: session state=PARKED");
-                    append("Conveyor released: LastStatus=AVAILABLE");
-                    append("SIMULATION: SMS sent to customer with parking details (session=" + r.sessionId + ").");
+                    append("Parking completed: state=PARKED");
+                    openBarrier();
 
                 } catch (Exception ex) {
                     append("ERROR: " + ex.getMessage());
@@ -147,4 +166,10 @@ public class GateSensorDummyUI extends JFrame {
     private String now() {
         return LocalDateTime.now().toString();
     }
+    @Override
+    public void vehicleArrivedForExit(int sessionId) {
+        append("Vehicle arrived at exit gate for session " + sessionId);
+        append("Waiting for payment approval...");
+    }
+
 }

@@ -14,17 +14,14 @@ import java.util.concurrent.ConcurrentHashMap;
  * ConveyorManagementController
  *
  * כולל:
- * 1) CRUD + state-machine (מה שהיה לך)
+ * 1) CRUD + state-machine 
  * 2) הרחבות לפי הסיפור ParkWise:
  *    - Integrity Check + retries + pause/alert
  *    - Assign vacant conveyor
  *    - Command execution (busy)
  *    - Optimization: nearest vacant spot (size + weight constraints)
  *    - Persist parking completion into ParkingSession
- *
- * חשוב:
- * - אין כאן חיישנים/threads אמיתיים. זה Controller שמספק API.
- * - מי שמפעיל את המתודות בפועל (UI/חיישן/סימולטור) – תחליטי אחר כך.
+
  */
 public class ConveyorManagementController {
 
@@ -850,4 +847,28 @@ public class ConveyorManagementController {
         if (o == null) return null;
         return ((Number) o).intValue();
     }
+    private Integer findAvailableConveyorId(Connection c, int parkingLotId, double vehicleWeight)
+            throws SQLException {
+
+        String sql =
+            "SELECT TOP 1 c.ID " +
+            "FROM Conveyor c " +
+            "WHERE c.ParkingLotID=? " +
+            "  AND c.isActive=True " +
+            "  AND c.Status='OPERATIONAL' " +
+            "  AND (c.LastStatus='AVAILABLE' OR c.LastStatus IS NULL) " +
+            "  AND c.MaxWeight >= ? " +
+            "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
+            "ORDER BY c.ID";
+
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, parkingLotId);
+            ps.setDouble(2, vehicleWeight);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return rs.getInt(1);
+            }
+        }
+    }
+
 }
