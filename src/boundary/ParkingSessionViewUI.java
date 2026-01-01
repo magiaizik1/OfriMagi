@@ -27,10 +27,24 @@ public class ParkingSessionViewUI extends JPanel {
         titleLabel = new JLabel("Parking Sessions – Lot: (not selected)");
         add(titleLabel, BorderLayout.NORTH);
 
+        // ===== MANAGER VIEW COLUMNS =====
         model = new DefaultTableModel(
-                new Object[]{"ID", "Start", "End", "Vehicle", "Spot", "Conveyor"}, 0
+                new Object[]{
+                        "ID",
+                        "Start Time",
+                        "End Time",
+                        "Vehicle ID",
+                        "Spot ID",
+                        "Conveyor ID",
+                        "Amount",
+                        "Rate"
+                },
+                0
         ) {
-            @Override public boolean isCellEditable(int r, int c) { return false; }
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
         };
 
         table = new JTable(model);
@@ -55,16 +69,20 @@ public class ParkingSessionViewUI extends JPanel {
 
         model.setRowCount(0);
 
-        List<Object[]> rows = controller.getSessionsByParkingLot(parkingLotId);
+        // ===== USE MANAGER API =====
+        List<Object[]> rows =
+                controller.getSessionsByParkingLotForManager(parkingLotId);
+
         for (Object[] r : rows) {
-            // r: ID, startTime, endTime, vehicleID, parkingSpotID, conveyorID
             model.addRow(new Object[]{
-                    r[0],
-                    formatTs(r[1]),
-                    formatTs(r[2]),
-                    r[3],
-                    r[4],
-                    r[5]
+                    r[0],                     // ID
+                    formatTs(r[1]),           // startTime
+                    formatTs(r[2]),           // endTime
+                    r[3],                     // vehicleID
+                    r[4],                     // parkingSpotID
+                    r[5],                     // conveyorID
+                    r[6],                     // amount (may be null)
+                    r[7]                      // rate (may be null)
             });
         }
     }
