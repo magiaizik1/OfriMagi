@@ -33,10 +33,6 @@
 			<accessrule kind="accessible" pattern="**"/>
 		</accessrules>
 	</classpathentry>
-	<classpathentry kind="lib" path="lib/net.sf.jasperreports_6.21.5.final.jar">
-		<accessrules>
-			<accessrule kind="accessible" pattern="**"/>
-		</accessrules>
-	</classpathentry>
+	<classpathentry kind="lib" path="lib/jasperreports-6.21.5.jar"/>
 	<classpathentry kind="output" path="bin"/>
 </classpath>

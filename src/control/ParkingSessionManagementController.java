@@ -810,16 +810,17 @@ public class ParkingSessionManagementController {
     }
 
     private Integer findAvailableConveyorId(Connection c, int parkingLotId, double vehicleWeight) throws SQLException {
+
+        // Available = Operational + Active + MaxWeight ok + not used in active session
         String sql =
                 "SELECT TOP 1 c.ID " +
-                        "FROM Conveyor c " +
-                        "WHERE c.ParkingLotID=? " +
-                        "  AND c.isActive=True " +
-                        "  AND c.Status='OPERATIONAL' " +
-                        "  AND c.LastStatus='AVAILABLE' " +
-                        "  AND c.MaxWeight >= ? " +
-                        "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
-                        "ORDER BY c.ID";
+                "FROM Conveyor c " +
+                "WHERE c.ParkingLotID=? " +
+                "  AND c.isActive=True " +
+                "  AND c.Status='OPERATIONAL' " +
+                "  AND c.MaxWeight >= ? " +
+                "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
+                "ORDER BY c.ID";
 
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, parkingLotId);
