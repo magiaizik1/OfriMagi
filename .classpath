@@ -3,7 +3,11 @@
 	<classpathentry kind="src" path="src"/>
 	<classpathentry kind="lib" path="lib/ucanaccess-5.0.1.jar"/>
 	<classpathentry kind="lib" path="lib/commons-lang3-3.8.1.jar"/>
-	<classpathentry kind="lib" path="lib/commons-logging-1.2.jar"/>
+	<classpathentry kind="lib" path="lib/commons-logging-1.2.jar">
+		<accessrules>
+			<accessrule kind="accessible" pattern="**"/>
+		</accessrules>
+	</classpathentry>
 	<classpathentry kind="lib" path="lib/hsqldb-2.5.0.jar"/>
 	<classpathentry kind="lib" path="lib/jackcess-3.0.1.jar"/>
 	<classpathentry kind="lib" path="lib/gson-2.10.1 (1).jar"/>
@@ -11,6 +15,28 @@
 		<attributes>
 			<attribute name="module" value="true"/>
 		</attributes>
+	</classpathentry>
+	<classpathentry kind="lib" path="lib/com.github.librepdf.openpdf-fonts-extra_1.3.32.jar"/>
+	<classpathentry kind="lib" path="lib/com.jaspersoft.studio.bundles.commons-beanutils_1.9.4.b01.jar">
+		<accessrules>
+			<accessrule kind="accessible" pattern="**"/>
+		</accessrules>
+	</classpathentry>
+	<classpathentry kind="lib" path="lib/com.jaspersoft.studio.bundles.commons-digester_2.1.0.201709071631.jar">
+		<accessrules>
+			<accessrule kind="accessible" pattern="**"/>
+		</accessrules>
+	</classpathentry>
+	<classpathentry kind="lib" path="lib/org.apache.commons.text_1.12.0.jar"/>
+	<classpathentry kind="lib" path="lib/org.apache.commons.collections_3.2.2.jar">
+		<accessrules>
+			<accessrule kind="accessible" pattern="**"/>
+		</accessrules>
+	</classpathentry>
+	<classpathentry kind="lib" path="lib/net.sf.jasperreports_6.21.5.final.jar">
+		<accessrules>
+			<accessrule kind="accessible" pattern="**"/>
+		</accessrules>
 	</classpathentry>
 	<classpathentry kind="output" path="bin"/>
 </classpath>
