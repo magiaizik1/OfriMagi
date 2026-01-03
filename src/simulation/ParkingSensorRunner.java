@@ -1,9 +1,13 @@
-package control;
+package simulation;
 
 import entity.ParkingLot;
 
 import java.util.List;
 import java.util.Random;
+
+import control.ParkingLotManagementController;
+import control.ParkingSessionManagementController;
+import control.ParkingSessionManagementController.SensorArrivalResult;
 
 public class ParkingSensorRunner {
 

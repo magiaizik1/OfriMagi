@@ -1,6 +1,7 @@
 package boundary;
 
 import control.*;
+import simulation.*;
 
 import javax.swing.*;
 
@@ -13,12 +14,24 @@ public class Main {
             // ===== DB =====
             AccessDb db = new AccessDb("db/parkwise_OfriMagi.accdb");
 
+            // ===== PORTS (Mocks) =====
+            ConsoleConveyorsMock conveyorsPort = new ConsoleConveyorsMock();
+            ConsoleGateSensorMock gateSensorPort = new ConsoleGateSensorMock();
+            ConsolePaymentGatewayMock paymentPort = new ConsolePaymentGatewayMock();
+            ConsoleSmsGatewayMock smsPort = new ConsoleSmsGatewayMock();
+
             // ===== Controllers =====
             ParkingLotManagementController parkingLotController =
                     new ParkingLotManagementController(db);
 
             ParkingSessionManagementController sessionController =
-                    new ParkingSessionManagementController(db);
+                    new ParkingSessionManagementController(
+                            db,
+                            conveyorsPort,
+                            gateSensorPort,
+                            paymentPort,
+                            smsPort
+                    );
 
             CityManagementController cityController =
                     new CityManagementController(db);
