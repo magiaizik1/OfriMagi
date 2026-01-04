@@ -1,3 +1,4 @@
+
 package control;
 
 import boundary.ConveyorsControllerPort;
@@ -14,18 +15,37 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
+/**
+ * ParkingSessionManagementController
+ *
+ * ✅ Internal system logic:
+ * - Creates/updates ParkingSession in DB
+ * - Finds suitable conveyor + nearest spot (optimization: same floor preferred, then min dist^2)
+ * - Calculates price by PriceHistory/PriceList
+ * - Applies club rules (discount + free first session in join month in preferred lot)
+ *
+ * ✅ External actors (do NOT implement here; just call ports):
+ * - Gate Sensor (GS)          -> GateSensorPort
+ * - Conveyors Controller (CC) -> ConveyorsControllerPort
+ * - Payment Gateway (PG)      -> PaymentGatewayPort
+ * - SMS Provider              -> SmsGatewayPort
+ *
+ * ⚠️ Important (per your DB reality):
+ * - Conveyor is "available" if: isActive=True AND Status='OPERATIONAL' AND NOT in active ParkingSession
+ * - We do NOT require LastStatus='AVAILABLE' (because you said it doesn't exist as a real state)
+ */
 public class ParkingSessionManagementController {
 
     private final AccessDb db;
     private final Random rnd = new Random();
 
-    // ===== External Ports (can be null if you don't run real external simulation) =====
+    // ===== External Ports (nullable) =====
     private final ConveyorsControllerPort conveyorsPort; // CC
     private final GateSensorPort gateSensorPort;         // GS
     private final PaymentGatewayPort paymentGatewayPort; // PG
     private final SmsGatewayPort smsGatewayPort;         // SMS
 
-    // fixed discount for ALL club members (except when free applies)
+    // Club: fixed discount for ALL club members (except when FREE applies)
     private static final double CLUB_DISCOUNT_RATE = 0.05; // 5%
 
     public ParkingSessionManagementController(
@@ -42,7 +62,7 @@ public class ParkingSessionManagementController {
         this.smsGatewayPort = smsGatewayPort;
     }
 
-    // Convenience ctor if you don't want to pass ports now (no crash; simply no external calls)
+    /** Convenience ctor: no external simulation (ports are null). */
     public ParkingSessionManagementController(AccessDb db) {
         this(db, null, null, null, null);
     }
@@ -51,6 +71,7 @@ public class ParkingSessionManagementController {
     // ===== EXISTING API ======
     // =========================
 
+    /** Session is created AFTER entry, when conveyor + spot were assigned. */
     public void startParkingSession(int parkingLotId, int vehicleId, int spotId, int conveyorId) throws Exception {
 
         String sql =
@@ -72,6 +93,7 @@ public class ParkingSessionManagementController {
         }
     }
 
+    /** Used by flow logic. */
     public void updateSessionState(int sessionId, String newState) throws Exception {
 
         String sql =
@@ -87,6 +109,7 @@ public class ParkingSessionManagementController {
         }
     }
 
+    /** Internal finalization (endTime + COMPLETED). */
     public void endParkingSession(int sessionId) throws Exception {
 
         String sql =
@@ -104,6 +127,7 @@ public class ParkingSessionManagementController {
         }
     }
 
+    /** EXISTING UI – 6 columns. */
     public List<Object[]> getSessionsByParkingLot(int parkingLotId) {
 
         List<Object[]> list = new ArrayList<>();
@@ -137,7 +161,12 @@ public class ParkingSessionManagementController {
         return list;
     }
 
-    // MANAGER VIEW
+    /**
+     * MANAGER VIEW:
+     * ID | Start | End | Vehicle | Spot | Conveyor | Amount | Rate
+     *
+     * If Receipt doesn't exist but session ended, computes amount online (including club rules).
+     */
     public List<Object[]> getSessionsByParkingLotForManager(int parkingLotId) {
 
         List<Object[]> list = new ArrayList<>();
@@ -168,7 +197,6 @@ public class ParkingSessionManagementController {
                     Object amtObj = rs.getObject("finalAmount");
                     if (amtObj != null) amount = toDouble(amtObj);
 
-                    // If no receipt but ended, compute including club rules
                     if (amount == null && endTs != null) {
                         PaymentComputation comp = computeFinalAmountForSessionTx(c, sessionId);
                         amount = comp.finalAmount;
@@ -196,7 +224,8 @@ public class ParkingSessionManagementController {
     }
 
     /**
-     * Writes receipt AFTER payment approved (PG is external).
+     * Receipt is created ONLY when client requests it (per story).
+     * Payment itself is handled outside (PG).
      */
     public void generateReceipt(int sessionId) {
 
@@ -206,9 +235,8 @@ public class ParkingSessionManagementController {
                 throw new RuntimeException("Receipt already exists");
             }
 
-            ParkingSessionData data = getSessionData(c, sessionId);
-            if (data.end == null)
-                throw new RuntimeException("Session still active");
+            SessionCore s = loadSessionCore(c, sessionId);
+            if (s.end == null) throw new RuntimeException("Session still active");
 
             PaymentComputation comp = computeFinalAmountForSessionTx(c, sessionId);
 
@@ -230,9 +258,10 @@ public class ParkingSessionManagementController {
     }
 
     // =========================
-    // ===== SENSOR API ========
+    // ===== ENTRY FLOW (DB) ===
     // =========================
 
+    /** Result for sensor/console simulation. */
     public static class SensorArrivalResult {
         public final String outcome; // OK / WAITING_FOR_CONVEYOR / LOT_FULL / NO_VEHICLE
         public final Integer parkingLotId;
@@ -253,20 +282,27 @@ public class ParkingSessionManagementController {
     }
 
     /**
-     * Full entry flow (per story):
-     * - choose vehicle
-     * - choose conveyor
-     * - choose nearest spot
-     * - create session
-     * - call GS open barrier (optional)
-     * - call CC moveToParkingSpot (optional)
+     * Entry flow (per story, DB-backed):
+     * 1) Pick a free vehicle (not in active session)
+     * 2) Find an available conveyor in lot that can carry weight
+     * 3) Find nearest available spot that fits vehicle size
+     * 4) Create ParkingSession with state MOVING_TO_PARKING
+     * 5) Decrement available spaces (if your column exists)
+     * 6) External (optional):
+     *    - GS openBarrier
+     *    - CC moveToParkingSpot and callback to mark PARKED + update conveyor position
      */
     public SensorArrivalResult simulateVehicleArrivalAndPark(int parkingLotId) throws Exception {
+
+        Integer vehicleId;
+        Integer conveyorId;
+        Integer spotId;
+        int sessionId;
 
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
 
-            Integer vehicleId = pickRandomFreeVehicle(c);
+            vehicleId = pickRandomFreeVehicle(c);
             if (vehicleId == null) {
                 c.rollback();
                 return new SensorArrivalResult("NO_VEHICLE", parkingLotId, null, null, null, null);
@@ -274,7 +310,7 @@ public class ParkingSessionManagementController {
 
             VehicleData v = getVehicleData(c, vehicleId);
 
-            Integer conveyorId = findAvailableConveyorId(c, parkingLotId, v.weight);
+            conveyorId = findAvailableConveyorId(c, parkingLotId, v.weight);
             if (conveyorId == null) {
                 c.rollback();
                 return new SensorArrivalResult("WAITING_FOR_CONVEYOR", parkingLotId, vehicleId, null, null, null);
@@ -282,85 +318,125 @@ public class ParkingSessionManagementController {
 
             ConveyorLoc cl = getConveyorLoc(c, conveyorId);
 
-            Integer spotId = findNearestAvailableSpotId(c, parkingLotId, v.size, cl.floor, cl.x, cl.y);
+            spotId = findNearestAvailableSpotId(c, parkingLotId, v.size, cl.floor, cl.x, cl.y);
             if (spotId == null) {
                 c.rollback();
                 return new SensorArrivalResult("LOT_FULL", parkingLotId, vehicleId, conveyorId, null, null);
             }
 
+            // Optional: mark LastStatus for auditing/debug (NOT used as "availability" rule)
             setConveyorLastStatus(c, conveyorId, "BUSY");
 
-            int sessionId = insertParkingSessionReturningId(
+            sessionId = insertParkingSessionReturningId(
                     c, parkingLotId, vehicleId, spotId, conveyorId, "MOVING_TO_PARKING"
             );
 
             decrementLotSpacesIfPossible(c, parkingLotId);
 
             c.commit();
-
-            // ==== External calls (optional) ====
-            if (gateSensorPort != null) {
-                gateSensorPort.openBarrier(parkingLotId);
-            }
-
-            if (conveyorsPort != null) {
-                conveyorsPort.moveToParkingSpot(sessionId, conveyorId, vehicleId, spotId,
-                        new ConveyorsControllerPort.MoveCallback() {
-                            @Override
-                            public void onMoveCompleted(String commandId, int newX, int newY, int newFloor) {
-                                // CC notifies system -> update DB
-                                try (Connection c2 = db.open()) {
-                                    c2.setAutoCommit(false);
-                                    updateSessionStateTx(c2, sessionId, "PARKED");
-                                    setConveyorLastStatus(c2, conveyorId, "AVAILABLE");
-                                    updateConveyorPositionTx(c2, conveyorId, newX, newY, newFloor);
-                                    c2.commit();
-                                } catch (Exception e) {
-                                    throw new RuntimeException(e);
-                                }
-                            }
-
-                            @Override
-                            public void onMoveFailed(String commandId, String reason) {
-                                // optional: mark session as ERROR
-                                try {
-                                    updateSessionState(sessionId, "ERROR_MOVE_TO_PARKING");
-                                } catch (Exception e) {
-                                    throw new RuntimeException(e);
-                                }
-                            }
-                        });
-            }
-
-            return new SensorArrivalResult("OK", parkingLotId, vehicleId, conveyorId, spotId, sessionId);
         }
+
+        // ===== External calls (optional) =====
+        if (gateSensorPort != null) {
+            gateSensorPort.openBarrier(parkingLotId);
+        }
+
+        // In the real story: CC moves vehicle and notifies system on completion + new conveyor location.
+        if (conveyorsPort != null) {
+            int finalVehicleId = vehicleId;
+            int finalConveyorId = conveyorId;
+            int finalSpotId = spotId;
+            int finalSessionId = sessionId;
+
+            conveyorsPort.moveToParkingSpot(finalSessionId, finalConveyorId, finalVehicleId, finalSpotId,
+                    new ConveyorsControllerPort.MoveCallback() {
+                        @Override
+                        public void onMoveCompleted(String commandId, int newX, int newY, int newFloor) {
+                            try (Connection c2 = db.open()) {
+                                c2.setAutoCommit(false);
+
+                                updateSessionStateTx(c2, finalSessionId, "PARKED");
+                                setConveyorLastStatus(c2, finalConveyorId, "IDLE");
+                                updateConveyorPositionTx(c2, finalConveyorId, newX, newY, newFloor);
+
+                                c2.commit();
+                            } catch (Exception e) {
+                                throw new RuntimeException(e);
+                            }
+
+                            // SMS is external
+                            try (Connection c3 = db.open()) {
+                                Integer customerId = getCustomerIdByVehicle(c3, finalVehicleId);
+                                if (customerId != null && smsGatewayPort != null) {
+                                    String phone = getCustomerPhoneSafe(c3, customerId);
+                                    if (phone != null && !phone.isEmpty()) {
+                                        smsGatewayPort.sendSms(
+                                                phone,
+                                                "ParkWise: vehicle " + finalVehicleId +
+                                                        " parked at lot " + parkingLotId +
+                                                        ", spot " + finalSpotId +
+                                                        " (session " + finalSessionId + ")"
+                                        );
+                                    }
+                                }
+                            } catch (Exception ignore) {}
+                        }
+
+                        @Override
+                        public void onMoveFailed(String commandId, String reason) {
+                            try {
+                                updateSessionState(finalSessionId, "ERROR_MOVE_TO_PARKING");
+                            } catch (Exception e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                    });
+        }
+
+        return new SensorArrivalResult("OK", parkingLotId, vehicleId, conveyorId, spotId, sessionId);
     }
 
-    // ==========================================================
-    // ===== EXIT FLOW – PER STORY (WITH PORTS) =================
-    // ==========================================================
+    // =========================
+    // ===== EXIT FLOW =========
+    // =========================
 
     /**
-     * Step 1: client requests exit -> system moves to MOVING_TO_EXIT and asks CC to move to gate.
+     * Client requests to end parking (UI):
+     * - Validate active session
+     * - Move to MOVING_TO_EXIT
+     * - Assign a vacant conveyor (we choose one here because port requires conveyorId)
+     * - Ask CC to move to gate -> callback sets WAITING_FOR_PAYMENT + updates conveyor location
      */
     public void requestExit(int sessionId) throws Exception {
 
         SessionCore s;
+        Integer assignedConveyorId;
+
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
 
-            // validate active
             s = loadSessionCore(c, sessionId);
             if (s.end != null) {
                 c.rollback();
                 throw new RuntimeException("Session already completed");
             }
 
-            // set state
+            VehicleData v = getVehicleData(c, s.vehicleId);
+
+            // Choose a vacant conveyor in same lot that can carry this vehicle
+            assignedConveyorId = findAvailableConveyorId(c, s.parkingLotId, v.weight);
+            if (assignedConveyorId == null) {
+                c.rollback();
+                throw new RuntimeException("No available conveyor for exit");
+            }
+
+            // Update session: assign conveyor + MOVING_TO_EXIT
             try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE ParkingSession SET state=? WHERE ID=? AND endTime IS NULL")) {
-                ps.setString(1, "MOVING_TO_EXIT");
-                ps.setInt(2, sessionId);
+                    "UPDATE ParkingSession SET conveyorID=?, state=? WHERE ID=? AND endTime IS NULL")) {
+                ps.setInt(1, assignedConveyorId);
+                ps.setString(2, "MOVING_TO_EXIT");
+                ps.setInt(3, sessionId);
+
                 int updated = ps.executeUpdate();
                 if (updated == 0) {
                     c.rollback();
@@ -368,32 +444,26 @@ public class ParkingSessionManagementController {
                 }
             }
 
+            setConveyorLastStatus(c, assignedConveyorId, "BUSY");
+
             c.commit();
         }
 
-        // Step 2: ask CC to move vehicle to gate (external)
+        // Ask CC to move to gate (external)
         if (conveyorsPort != null) {
-            Integer conveyorId;
-            try (Connection c = db.open()) {
-                conveyorId = getActiveSessionConveyorId(c, sessionId);
-            }
+            int finalConveyorId = assignedConveyorId;
+            SessionCore finalS = s;
 
-            if (conveyorId == null) throw new RuntimeException("No conveyor on active session");
-
-            // mark conveyor busy
-            try (Connection c = db.open()) {
-                setConveyorLastStatus(c, conveyorId, "BUSY");
-            }
-
-            conveyorsPort.moveToGate(sessionId, conveyorId, s.vehicleId,
+            conveyorsPort.moveToGate(sessionId, finalConveyorId, finalS.vehicleId,
                     new ConveyorsControllerPort.MoveCallback() {
                         @Override
                         public void onMoveCompleted(String commandId, int newX, int newY, int newFloor) {
                             try (Connection c2 = db.open()) {
                                 c2.setAutoCommit(false);
-                                // arrived to gate -> waiting for payment
+
                                 updateSessionStateTx(c2, sessionId, "WAITING_FOR_PAYMENT");
-                                updateConveyorPositionTx(c2, conveyorId, newX, newY, newFloor);
+                                updateConveyorPositionTx(c2, finalConveyorId, newX, newY, newFloor);
+
                                 c2.commit();
                             } catch (Exception e) {
                                 throw new RuntimeException(e);
@@ -413,127 +483,114 @@ public class ParkingSessionManagementController {
     }
 
     /**
-     * Step 3+4:
-     * When at gate and WAITING_FOR_PAYMENT -> system calculates amount and requests PG.
-     * Later PG callback -> we call confirmPaymentAndExit / decline handler.
+     * Called when session is WAITING_FOR_PAYMENT:
+     * - Calculate amount (until now) by PriceList/History
+     * - Apply club rules
+     * - Send payment request to PG (external)
+     * - On approved -> complete session + open barrier
+     * - Receipt is NOT auto-created (client can request generateReceipt)
      */
     public void requestPaymentForExit(int sessionId) {
 
         try (Connection c = db.open()) {
+
             SessionCore s = loadSessionCore(c, sessionId);
             if (s.end != null) throw new RuntimeException("Session already completed");
 
-            // must be waiting for payment
             String state = getSessionState(c, sessionId);
-            if (!"WAITING_FOR_PAYMENT".equalsIgnoreCase(state)) {
+            if (state == null || !"WAITING_FOR_PAYMENT".equalsIgnoreCase(state.trim())) {
                 throw new RuntimeException("Session not in WAITING_FOR_PAYMENT (current=" + state + ")");
             }
 
-            // compute amount according to club rules:
-            // in story: amount is based on duration UNTIL EXIT time.
-            // so we set a temporary "endTimeNow" for calculation but not finalize session yet.
             LocalDateTime now = LocalDateTime.now();
 
-            // calculate base on now:
             PriceList price = getCurrentPriceListAt(c, s.parkingLotId, now);
-            if (price == null) throw new RuntimeException("No active price list");
+            if (price == null) throw new RuntimeException("No active price list for lot " + s.parkingLotId);
 
             long minutes = Duration.between(s.start, now).toMinutes();
             CalcResult base = calculateAmountAndRate(minutes, price);
 
             Integer customerId = getCustomerIdByVehicle(c, s.vehicleId);
-            String phone = (customerId == null) ? null : getCustomerPhone(c, customerId);
+            String phone = (customerId == null) ? "" : safeString(getCustomerPhoneSafe(c, customerId));
 
-            double finalAmount = applyClubBenefitsForExitAmount(c, customerId, s.parkingLotId, s.start, base.amount);
+            double finalAmount = applyClubBenefitsForExitAmount(
+                    c, customerId, s.parkingLotId, s.start, base.amount
+            );
 
-            if (paymentGatewayPort != null) {
-                paymentGatewayPort.requestPayment(
-                        sessionId,
-                        customerId == null ? 0 : customerId,
-                        phone == null ? "" : phone,
-                        finalAmount,
-                        new PaymentGatewayPort.PaymentCallback() {
-                            @Override
-                            public void onApproved(String paymentId) {
-                                try {
-                                    confirmPaymentAndExit(sessionId, finalAmount, "PG_APPROVED:" + paymentId);
-                                } catch (Exception e) {
-                                    throw new RuntimeException(e);
-                                }
-                            }
+            if (paymentGatewayPort == null) {
+                // No PG simulation attached -> just leave as is (UI can show finalAmount).
+                return;
+            }
 
-                            @Override
-                            public void onDeclined(String paymentId, String reason) {
-                                try {
-                                    updateSessionState(sessionId, "PAYMENT_DECLINED");
-                                } catch (Exception e) {
-                                    throw new RuntimeException(e);
-                                }
+            int finalCustomerId = (customerId == null) ? 0 : customerId;
+            paymentGatewayPort.requestPayment(
+                    sessionId,
+                    finalCustomerId,
+                    phone,
+                    finalAmount,
+                    new PaymentGatewayPort.PaymentCallback() {
+                        @Override
+                        public void onApproved(String paymentId) {
+                            try {
+                                confirmPaymentAndExit(sessionId);
+                            } catch (Exception e) {
+                                throw new RuntimeException(e);
                             }
                         }
-                );
-            }
+
+                        @Override
+                        public void onDeclined(String paymentId, String reason) {
+                            try {
+                                updateSessionState(sessionId, "PAYMENT_DECLINED");
+                            } catch (Exception e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                    }
+            );
 
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
-    /**
-     * Payment approved externally -> system completes session, releases conveyor, opens barrier, creates receipt.
-     */
-    private void confirmPaymentAndExit(int sessionId, double amountCharged, String appliedRateExtra) throws Exception {
+    /** Payment approved externally -> finalize session + release conveyor + open barrier (external). */
+    private void confirmPaymentAndExit(int sessionId) throws Exception {
+
+        int lotId;
+        Integer conveyorId;
 
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
 
-            Integer conveyorId = getActiveSessionConveyorId(c, sessionId);
             SessionCore s = loadSessionCore(c, sessionId);
+            lotId = s.parkingLotId;
 
-            // finalize session endTime now
-            LocalDateTime endNow = LocalDateTime.now();
+            conveyorId = getActiveSessionConveyorId(c, sessionId);
 
             try (PreparedStatement ps =
-                         c.prepareStatement(
-                                 "UPDATE ParkingSession SET endTime=?, state=? WHERE ID=? AND endTime IS NULL")) {
-                ps.setTimestamp(1, Timestamp.valueOf(endNow));
+                         c.prepareStatement("UPDATE ParkingSession SET endTime=?, state=? WHERE ID=? AND endTime IS NULL")) {
+                ps.setTimestamp(1, Timestamp.valueOf(LocalDateTime.now()));
                 ps.setString(2, "COMPLETED");
                 ps.setInt(3, sessionId);
                 ps.executeUpdate();
             }
 
-            // release conveyor
             if (conveyorId != null) {
-                setConveyorLastStatus(c, conveyorId, "AVAILABLE");
+                setConveyorLastStatus(c, conveyorId, "IDLE");
             }
 
             c.commit();
         }
 
-        // open barrier (external)
-        try (Connection c = db.open()) {
-            int lotId = loadSessionCore(c, sessionId).parkingLotId;
-            if (gateSensorPort != null) gateSensorPort.openBarrier(lotId);
-        }
-
-        // create receipt (system internal)
-        generateReceipt(sessionId);
-
-        // optional sms to customer
-        try (Connection c = db.open()) {
-            Integer customerId = getCustomerIdByVehicle(c, loadSessionCore(c, sessionId).vehicleId);
-            if (customerId != null && smsGatewayPort != null) {
-                String phone = getCustomerPhone(c, customerId);
-                if (phone != null && !phone.isEmpty()) {
-                    smsGatewayPort.sendSms(phone, "Payment approved. Receipt generated for session " + sessionId);
-                }
-            }
+        if (gateSensorPort != null) {
+            gateSensorPort.openBarrier(lotId);
         }
     }
 
-    // ==========================================================
-    // ===== CLUB PRICING (PER STORY) ===========================
-    // ==========================================================
+    // =========================
+    // ===== CLUB PRICING ======
+    // =========================
 
     public PaymentComputation computeFinalAmountForSession(int sessionId) {
         try (Connection c = db.open()) {
@@ -557,14 +614,10 @@ public class ParkingSessionManagementController {
         CalcResult base = calculateAmountAndRate(minutes, price);
 
         Integer customerId = getCustomerIdByVehicle(c, s.vehicleId);
-        if (customerId == null) {
-            return new PaymentComputation(base.amount, base.rate);
-        }
+        if (customerId == null) return new PaymentComputation(base.amount, base.rate);
 
         LocalDateTime joinDate = getMembershipJoinDate(c, customerId);
-        if (joinDate == null) {
-            return new PaymentComputation(base.amount, base.rate);
-        }
+        if (joinDate == null) return new PaymentComputation(base.amount, base.rate); // not a member
 
         boolean free = isFreeFirstSessionInRegistrationMonth(
                 c, customerId, s.parkingLotId, s.start, joinDate
@@ -578,16 +631,14 @@ public class ParkingSessionManagementController {
         return new PaymentComputation(discounted, base.rate + " + ClubDiscount5%");
     }
 
-    /**
-     * For EXIT payment request, we compute amount until "now" and apply club rules.
-     */
+    /** For EXIT payment request (until "now"). */
     private double applyClubBenefitsForExitAmount(Connection c, Integer customerId, int parkingLotId,
                                                   LocalDateTime sessionStart, double baseAmount) throws SQLException {
 
         if (customerId == null) return baseAmount;
 
         LocalDateTime joinDate = getMembershipJoinDate(c, customerId);
-        if (joinDate == null) return baseAmount; // not a member
+        if (joinDate == null) return baseAmount;
 
         boolean free = isFreeFirstSessionInRegistrationMonth(c, customerId, parkingLotId, sessionStart, joinDate);
         if (free) return 0.0;
@@ -607,13 +658,17 @@ public class ParkingSessionManagementController {
         YearMonth sessionYM = YearMonth.from(sessionStart);
         if (!joinYM.equals(sessionYM)) return false;
 
+        // Must be in preferred lots (at time of selectionDate <= sessionStart)
         if (!isPreferredLotAtTime(c, customerId, parkingLotId, sessionStart)) return false;
 
+        // Must be first completed session in that month (before this session)
         return !existsAnyCompletedSessionInJoinMonth(c, customerId, joinYM, sessionStart);
     }
 
     private boolean isPreferredLotAtTime(Connection c, int customerId, int parkingLotId, LocalDateTime at) throws SQLException {
 
+        // ⚠️ Ensure your table/columns match:
+        // PreferredParkingLot(customerID, parkingLotID, selectionDate)
         String sql =
                 "SELECT COUNT(*) " +
                         "FROM PreferredParkingLot " +
@@ -637,6 +692,7 @@ public class ParkingSessionManagementController {
         LocalDateTime from = joinYM.atDay(1).atStartOfDay();
         LocalDateTime to = joinYM.plusMonths(1).atDay(1).atStartOfDay();
 
+        // We detect customer sessions via Vehicle.customerID association
         String sql =
                 "SELECT COUNT(*) " +
                         "FROM ParkingSession s " +
@@ -668,9 +724,9 @@ public class ParkingSessionManagementController {
         }
     }
 
-    // ==========================================================
-    // ===== Small helpers for state/phone/conveyor position =====
-    // ==========================================================
+    // =========================
+    // ===== DB HELPERS ========
+    // =========================
 
     private String getSessionState(Connection c, int sessionId) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT state FROM ParkingSession WHERE ID=?")) {
@@ -692,57 +748,6 @@ public class ParkingSessionManagementController {
         }
     }
 
-    private String getCustomerPhone(Connection c, int customerId) throws SQLException {
-        // ⚠️ תעדכני את שם העמודה לפי הדאטאבייס שלך (phone / phoneNumber / mobile וכו')
-        try (PreparedStatement ps = c.prepareStatement("SELECT phone FROM Customer WHERE ID=?")) {
-            ps.setInt(1, customerId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return null;
-                return rs.getString(1);
-            }
-        }
-    }
-
-    // ==========================================================
-    // ===== Session core + DB helpers (yours) ===================
-    // ==========================================================
-
-    private static class SessionCore {
-        int parkingLotId;
-        int vehicleId;
-        LocalDateTime start;
-        LocalDateTime end;
-
-        SessionCore(int parkingLotId, int vehicleId, LocalDateTime start, LocalDateTime end) {
-            this.parkingLotId = parkingLotId;
-            this.vehicleId = vehicleId;
-            this.start = start;
-            this.end = end;
-        }
-    }
-
-    private SessionCore loadSessionCore(Connection c, int sessionId) throws SQLException {
-
-        String sql =
-                "SELECT parkingLotID, vehicleID, startTime, endTime " +
-                        "FROM ParkingSession WHERE ID=?";
-
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, sessionId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) throw new SQLException("Session not found: " + sessionId);
-
-                int lotId = rs.getInt("parkingLotID");
-                int vehicleId = rs.getInt("vehicleID");
-                LocalDateTime start = rs.getTimestamp("startTime").toLocalDateTime();
-                Timestamp endTs = rs.getTimestamp("endTime");
-                LocalDateTime end = (endTs == null) ? null : endTs.toLocalDateTime();
-
-                return new SessionCore(lotId, vehicleId, start, end);
-            }
-        }
-    }
-
     private Integer getCustomerIdByVehicle(Connection c, int vehicleId) throws SQLException {
         String sql = "SELECT customerID FROM Vehicle WHERE ID=?";
         try (PreparedStatement ps = c.prepareStatement(sql)) {
@@ -757,6 +762,7 @@ public class ParkingSessionManagementController {
     }
 
     private LocalDateTime getMembershipJoinDate(Connection c, int customerId) throws SQLException {
+        // CustomerClubMembership(customerID, joinDate)
         String sql = "SELECT joinDate FROM CustomerClubMembership WHERE customerID=?";
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, customerId);
@@ -766,6 +772,26 @@ public class ParkingSessionManagementController {
                 return ts == null ? null : ts.toLocalDateTime();
             }
         }
+    }
+
+    /**
+     * ⚠️ Update the column name if needed (phone / phoneNumber / mobile / mobilePhone etc.)
+     * This is the ONLY place you might need to rename a column.
+     */
+    private String getCustomerPhoneSafe(Connection c, int customerId) {
+        try (PreparedStatement ps = c.prepareStatement("SELECT phone FROM Customer WHERE ID=?")) {
+            ps.setInt(1, customerId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return rs.getString(1);
+            }
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String safeString(String s) {
+        return s == null ? "" : s;
     }
 
     private double round2(double v) {
@@ -809,18 +835,21 @@ public class ParkingSessionManagementController {
         return "SMALL";
     }
 
+    /**
+     * ✅ Your rule (no AVAILABLE state):
+     * Available = isActive=True AND Status='OPERATIONAL' AND MaxWeight ok AND not in active ParkingSession
+     */
     private Integer findAvailableConveyorId(Connection c, int parkingLotId, double vehicleWeight) throws SQLException {
 
-        // Available = Operational + Active + MaxWeight ok + not used in active session
         String sql =
                 "SELECT TOP 1 c.ID " +
-                "FROM Conveyor c " +
-                "WHERE c.ParkingLotID=? " +
-                "  AND c.isActive=True " +
-                "  AND c.Status='OPERATIONAL' " +
-                "  AND c.MaxWeight >= ? " +
-                "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
-                "ORDER BY c.ID";
+                        "FROM Conveyor c " +
+                        "WHERE c.ParkingLotID=? " +
+                        "  AND c.isActive=True " +
+                        "  AND c.Status='OPERATIONAL' " +
+                        "  AND c.MaxWeight >= ? " +
+                        "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
+                        "ORDER BY c.ID";
 
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, parkingLotId);
@@ -890,9 +919,7 @@ public class ParkingSessionManagementController {
     }
 
     private boolean canSpotFitVehicle(String spotSize, String vehicleSize) {
-        int s = sizeRank(spotSize);
-        int v = sizeRank(vehicleSize);
-        return s >= v;
+        return sizeRank(spotSize) >= sizeRank(vehicleSize);
     }
 
     private int sizeRank(String size) {
@@ -960,12 +987,15 @@ public class ParkingSessionManagementController {
             ps.setInt(1, sessionId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
+                Object o = rs.getObject(1);
+                if (o == null) return null;
                 return rs.getInt(1);
             }
         }
     }
 
     private void decrementLotSpacesIfPossible(Connection c, int parkingLotId) throws SQLException {
+        // You had this field name: availablaSpaces (typo) - keep it as you had.
         String sql =
                 "UPDATE ParkingLot SET availablaSpaces = IIF(availablaSpaces>0, availablaSpaces-1, 0) " +
                         "WHERE ID=?";
@@ -986,22 +1016,24 @@ public class ParkingSessionManagementController {
         }
     }
 
-    private ParkingSessionData getSessionData(Connection c, int id) throws SQLException {
+    private SessionCore loadSessionCore(Connection c, int sessionId) throws SQLException {
 
-        String sql = "SELECT startTime, endTime, parkingLotID FROM ParkingSession WHERE ID=?";
+        String sql =
+                "SELECT parkingLotID, vehicleID, startTime, endTime " +
+                        "FROM ParkingSession WHERE ID=?";
 
         try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setInt(1, id);
-
+            ps.setInt(1, sessionId);
             try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) throw new SQLException("Session not found");
+                if (!rs.next()) throw new SQLException("Session not found: " + sessionId);
 
+                int lotId = rs.getInt("parkingLotID");
+                int vehicleId = rs.getInt("vehicleID");
                 LocalDateTime start = rs.getTimestamp("startTime").toLocalDateTime();
                 Timestamp endTs = rs.getTimestamp("endTime");
-                LocalDateTime end =
-                        (endTs == null) ? null : endTs.toLocalDateTime();
+                LocalDateTime end = (endTs == null) ? null : endTs.toLocalDateTime();
 
-                return new ParkingSessionData(start, end, rs.getInt("parkingLotID"));
+                return new SessionCore(lotId, vehicleId, start, end);
             }
         }
     }
@@ -1062,15 +1094,21 @@ public class ParkingSessionManagementController {
         return new CalcResult(p.getFullDayPrice(), "FullDay");
     }
 
-    private static class ParkingSessionData {
+    // =========================
+    // ===== INNER CLASSES =====
+    // =========================
+
+    private static class SessionCore {
+        int parkingLotId;
+        int vehicleId;
         LocalDateTime start;
         LocalDateTime end;
-        int parkingLotId;
 
-        ParkingSessionData(LocalDateTime start, LocalDateTime end, int parkingLotId) {
+        SessionCore(int parkingLotId, int vehicleId, LocalDateTime start, LocalDateTime end) {
+            this.parkingLotId = parkingLotId;
+            this.vehicleId = vehicleId;
             this.start = start;
             this.end = end;
-            this.parkingLotId = parkingLotId;
         }
     }
 
@@ -1099,7 +1137,9 @@ public class ParkingSessionManagementController {
     private static class ConveyorLoc {
         int x, y, floor;
         ConveyorLoc(int x, int y, int floor) {
-            this.x = x; this.y = y; this.floor = floor;
+            this.x = x;
+            this.y = y;
+            this.floor = floor;
         }
     }
 }
