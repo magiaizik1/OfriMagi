@@ -1,55 +1,62 @@
 package control;
 
+import net.sf.jasperreports.engine.*;
+import net.sf.jasperreports.view.JasperViewer;
+
+import javax.swing.*;
+import java.io.File;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.util.HashMap;
 import java.util.Map;
 
-// אימפורטים לגרסה 6 (ללא compile או getInstance)
-import net.sf.jasperreports.engine.JasperCompileManager;
-import net.sf.jasperreports.engine.JasperFillManager;
-import net.sf.jasperreports.engine.JasperPrint;
-import net.sf.jasperreports.engine.JasperReport;
-import net.sf.jasperreports.view.JasperViewer;
-
 public class ReportController {
 
-    public void generateParkingReport() {
-        // נתיבים (לפי התמונות ששלחת)
-        String dbUrl = "jdbc:ucanaccess://db/ParkWiseDB.accdb";
-        String reportPath = "src/reports/Blank_A4.jrxml";
+    // התאמה מלאה למבנה הפרויקט שלך
+    private static final String DB_PATH = "db/parkwise_OfriMagi.accdb";
+    private static final String REPORT_PATH = "reports/Annual_Parking_Summary.jrxml";
+
+    public void showAnnualSummaryReport(int year) {
 
         try {
-            System.out.println("...מתחיל בתהליך הפקת הדוח");
+            // 1️⃣ בדיקות קיום
+            File dbFile = new File(DB_PATH);
+            if (!dbFile.exists()) {
+                throw new IllegalStateException("DB not found: " + dbFile.getAbsolutePath());
+            }
 
-            // 1. חיבור למסד הנתונים
-            Connection conn = DriverManager.getConnection(dbUrl);
-            System.out.println("1. החיבור ל-Database הצליח.");
+            File reportFile = new File(REPORT_PATH);
+            if (!reportFile.exists()) {
+                throw new IllegalStateException("Report not found: " + reportFile.getAbsolutePath());
+            }
 
-            // 2. קימפול הדוח (בגרסה 6 הפעולה היא סטטית)
-            JasperReport jasperReport = JasperCompileManager.compileReport(reportPath);
-            System.out.println("2. קובץ ה-JRXML קומפל בהצלחה.");
+            // 2️⃣ חיבור ל־Access
+            String dbUrl = "jdbc:ucanaccess://" + dbFile.getAbsolutePath();
+            try (Connection conn = DriverManager.getConnection(dbUrl)) {
 
-            // 3. פרמטרים (כרגע ריק)
-            Map<String, Object> parameters = new HashMap<>();
+                // 3️⃣ קומפילציה
+                JasperReport report =
+                        JasperCompileManager.compileReport(reportFile.getAbsolutePath());
 
-            // 4. מילוי הדוח בנתונים
-            JasperPrint jasperPrint = JasperFillManager.fillReport(jasperReport, parameters, conn);
-            System.out.println("3. הדוח מולא בנתונים.");
+                // 4️⃣ פרמטרים
+                Map<String, Object> params = new HashMap<>();
+                params.put("EnterYear", year);
 
-            // 5. הצגת הדוח
-            // false = סגירת הדוח לא תסגור את התוכנה כולה
-            JasperViewer.viewReport(jasperPrint, false);
+                // 5️⃣ מילוי והצגה
+                JasperPrint print =
+                        JasperFillManager.fillReport(report, params, conn);
 
-            conn.close();
+                JasperViewer.viewReport(print, false);
+            }
 
         } catch (Exception e) {
-            System.err.println("שגיאה בהפקת הדוח: " + e.getMessage());
             e.printStackTrace();
+            JOptionPane.showMessageDialog(
+                    null,
+                    "Failed to generate report:\n" + e.getMessage(),
+                    "Report Error",
+                    JOptionPane.ERROR_MESSAGE
+            );
         }
-    }
-
-    public static void main(String[] args) {
-        new ReportController().generateParkingReport();
     }
 }

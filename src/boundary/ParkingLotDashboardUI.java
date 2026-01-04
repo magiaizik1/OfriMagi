@@ -6,6 +6,7 @@ import control.ConveyorManagementController;
 import control.ParkingLotManagementController;
 import control.PriceHistoryManagementController;
 import control.PriceListManagementController;
+import control.ReportController; // ✅ NEW
 import entity.City;
 import entity.ParkingLot;
 
@@ -24,6 +25,8 @@ public class ParkingLotDashboardUI extends JFrame {
     private final ConveyorManagementController conveyorController;
     private final PriceHistoryManagementController priceHistoryController;
     private final PriceListManagementController priceListController;
+
+    private final ReportController reportController = new ReportController(); // ✅ NEW
 
     private JButton parkingSessionBtn;
     private JTable table;
@@ -46,6 +49,8 @@ public class ParkingLotDashboardUI extends JFrame {
     private JButton conveyorBtn;
     private JButton priceHistoryBtn;
     private JButton priceListBtn;
+
+    private JButton annualReportBtn; // ✅ NEW
 
     public ParkingLotDashboardUI(
             AccessDb db,
@@ -95,6 +100,10 @@ public class ParkingLotDashboardUI extends JFrame {
         priceListBtn = new JButton("Import Price List");
         parkingSessionBtn = new JButton("Parking Sessions");
 
+        // ✅ NEW BUTTON
+        annualReportBtn = new JButton("Annual Report");
+        annualReportBtn.addActionListener(e -> openAnnualReport());
+
         conveyorBtn.addActionListener(e -> openConveyorScreen());
         priceHistoryBtn.addActionListener(e -> openPriceHistoryScreen());
         priceListBtn.addActionListener(e -> openPriceListScreen());
@@ -104,6 +113,7 @@ public class ParkingLotDashboardUI extends JFrame {
         secondaryPanel.add(priceHistoryBtn);
         secondaryPanel.add(priceListBtn);
         secondaryPanel.add(parkingSessionBtn);
+        secondaryPanel.add(annualReportBtn); // ✅ NEW (added to UI)
 
         JPanel north = new JPanel(new BorderLayout());
         north.add(searchPanel, BorderLayout.WEST);
@@ -191,6 +201,24 @@ public class ParkingLotDashboardUI extends JFrame {
                 break;
             }
         }
+    }
+
+    // ✅ NEW: open report with year input
+    private void openAnnualReport() {
+        String input = JOptionPane.showInputDialog(this, "Enter year:", "2025");
+        if (input == null) return; // cancel
+        input = input.trim();
+        if (input.isEmpty()) return;
+
+        int year;
+        try {
+            year = Integer.parseInt(input);
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, "Please enter a valid year (e.g., 2025).");
+            return;
+        }
+
+        reportController.showAnnualSummaryReport(year);
     }
 
     // ===== PARKING SESSIONS – VIEW ONLY =====

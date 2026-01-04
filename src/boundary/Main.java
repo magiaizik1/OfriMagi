@@ -14,51 +14,53 @@ public class Main {
             // ===== DB =====
             AccessDb db = new AccessDb("db/parkwise_OfriMagi.accdb");
 
-            // ===== PORTS (Mocks) =====
-            ConsoleConveyorsMock conveyorsPort = new ConsoleConveyorsMock();
+            // ===== HARDWARE ACTORS (Ports Implementations) -> Console =====
+            ConsoleConveyorsMock conveyorsPort = new ConsoleConveyorsMock(db);
             ConsoleGateSensorMock gateSensorPort = new ConsoleGateSensorMock();
             ConsolePaymentGatewayMock paymentPort = new ConsolePaymentGatewayMock();
             ConsoleSmsGatewayMock smsPort = new ConsoleSmsGatewayMock();
 
             // ===== Controllers =====
-            ParkingLotManagementController parkingLotController =
-                    new ParkingLotManagementController(db);
+            ParkingLotManagementController parkingLotController = new ParkingLotManagementController(db);
 
             ParkingSessionManagementController sessionController =
-                    new ParkingSessionManagementController(
+                    new ParkingSessionManagementController(db, conveyorsPort, gateSensorPort, paymentPort, smsPort);
+
+            CityManagementController cityController = new CityManagementController(db);
+            ConveyorManagementController conveyorController = new ConveyorManagementController(db);
+            PriceHistoryManagementController priceHistoryController = new PriceHistoryManagementController(db);
+            PriceListManagementController priceListController = new PriceListManagementController(db);
+
+            // ===== Human actors GUI: Role selection =====
+            RoleSelectUI roleSelect = new RoleSelectUI(new RoleSelectUI.RoleCallback() {
+                @Override
+                public void onAdmin() {
+                    ParkingLotDashboardUI dashboard = new ParkingLotDashboardUI(
                             db,
-                            conveyorsPort,
-                            gateSensorPort,
-                            paymentPort,
-                            smsPort
+                            parkingLotController,
+                            cityController,
+                            conveyorController,
+                            priceHistoryController,
+                            priceListController
                     );
+                    dashboard.setVisible(true);
+                }
 
-            CityManagementController cityController =
-                    new CityManagementController(db);
-            ConveyorManagementController conveyorController =
-                    new ConveyorManagementController(db);
-            PriceHistoryManagementController priceHistoryController =
-                    new PriceHistoryManagementController(db);
-            PriceListManagementController priceListController =
-                    new PriceListManagementController(db);
+                @Override
+                public void onClient() {
+                    ClientUiFrame clientFrame = new ClientUiFrame(sessionController);
+                    clientFrame.setVisible(true);
+                }
+            });
 
-            // ===== Admin UI =====
-            ParkingLotDashboardUI dashboard = new ParkingLotDashboardUI(
-                    db,
-                    parkingLotController,
-                    cityController,
-                    conveyorController,
-                    priceHistoryController,
-                    priceListController
-            );
-            dashboard.setVisible(true);
+            roleSelect.setVisible(true);
 
-            // ===== SENSOR DEMO =====
-            ParkingSensorRunner sensor =
-                    new ParkingSensorRunner(sessionController, parkingLotController);
-
-            System.out.println("\n=== SENSOR SIMULATION START ===");
-            sensor.simulateSingleArrival();
+            // ===== SENSOR DEMO (Optional) =====
+            // ✅ Runs in console and prints hardware logs (GS/CC/PG/SMS)
+            new Thread(() -> {
+                ParkingSensorRunner sensor = new ParkingSensorRunner(sessionController, parkingLotController);
+                sensor.simulateSingleArrival();
+            }).start();
         });
     }
 }

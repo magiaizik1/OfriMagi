@@ -1,4 +1,3 @@
-
 package control;
 
 import boundary.ConveyorsControllerPort;
@@ -397,16 +396,183 @@ public class ParkingSessionManagementController {
     }
 
     // =========================
+    // ===== CLIENT UI FLOW =====
+    // =========================
+
+    /** Client enters phone -> system shows active parking details. */
+    public List<String> getActiveParkingDetailsByPhone(String phoneNumber) {
+
+        String phone = safeString(phoneNumber).trim();
+
+        if (phone.isEmpty())
+            return List.of("❗ Please enter phone number.");
+        if (!phone.matches("\\d{9,10}"))
+            return List.of("❗ Phone must contain 9-10 digits (numbers only).");
+
+        try (Connection c = db.open()) {
+
+            Integer customerId = getCustomerIdByPhone(c, phone);
+            if (customerId == null)
+                return List.of("No customer found for this phone.");
+
+            String sql =
+                    "SELECT s.ID AS sessionId, s.parkingLotID, s.vehicleID, s.parkingSpotID, s.state, s.startTime " +
+                    "FROM ParkingSession s " +
+                    "JOIN Vehicle v ON v.ID = s.vehicleID " +
+                    "WHERE v.customerID = ? AND s.endTime IS NULL " +
+                    "ORDER BY s.startTime DESC";
+
+            List<String> out = new ArrayList<>();
+
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setInt(1, customerId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        out.add(
+                                "Active session #" + rs.getInt("sessionId") +
+                                " | lot=" + rs.getInt("parkingLotID") +
+                                " | vehicle=" + rs.getInt("vehicleID") +
+                                " | spot=" + rs.getObject("parkingSpotID") +
+                                " | state=" + rs.getString("state") +
+                                " | start=" + rs.getTimestamp("startTime")
+                        );
+                    }
+                }
+            }
+
+            if (out.isEmpty())
+                out.add("No active parking sessions for this phone.");
+
+            return out;
+
+        } catch (SQLException e) {
+            return List.of("❌ Database error while searching phone. (Check Customer.mobilePhon column name)");
+        } catch (Exception e) {
+            return List.of("❌ Unexpected error: " + e.getMessage());
+        }
+    }
+
+    public String requestEndParkingByVehicleAndPhone(String vehicleNumber, String phoneNumber) {
+
+        String phone = safeString(phoneNumber).trim();
+        String vehicleStr = safeString(vehicleNumber).trim();
+
+        if (phone.isEmpty() || vehicleStr.isEmpty())
+            return "❗ Enter phone + vehicle number.";
+        if (!phone.matches("\\d{9,10}"))
+            return "❗ Phone must contain 9-10 digits (numbers only).";
+        if (!vehicleStr.matches("\\d+"))
+            return "❗ Vehicle number must be digits only.";
+
+        try (Connection c = db.open()) {
+
+            int vehicleId = Integer.parseInt(vehicleStr);
+
+            Integer customerId = getCustomerIdByVehicle(c, vehicleId);
+            if (customerId == null)
+                return "Vehicle is not associated with any customer.";
+
+            String realPhone = safeString(getCustomerPhoneSafe(c, customerId)).trim();
+            if (realPhone.isEmpty())
+                return "Customer has no phone stored in DB.";
+            if (!realPhone.equals(phone))
+                return "Phone validation failed (phone does not match this vehicle).";
+
+            Integer sessionId = getActiveSessionIdByVehicle(c, vehicleId);
+            if (sessionId == null)
+                return "No active parking session found for this vehicle.";
+
+            requestExit(sessionId);
+
+            return "✅ Exit requested. Vehicle is being transferred to the gate.\n" +
+                   "When state becomes WAITING_FOR_PAYMENT, click Pay Now.";
+
+        } catch (RuntimeException re) {
+            return "❌ " + re.getMessage();
+        } catch (Exception e) {
+            return "❌ Failed to request exit: " + e.getMessage();
+        }
+    }
+
+    public String requestPaymentByVehicleAndPhone(String vehicleNumber, String phoneNumber) {
+
+        String phone = safeString(phoneNumber).trim();
+        String vehicleStr = safeString(vehicleNumber).trim();
+
+        if (phone.isEmpty() || vehicleStr.isEmpty())
+            return "❗ Enter phone + vehicle number.";
+        if (!phone.matches("\\d{9,10}"))
+            return "❗ Phone must contain 9-10 digits (numbers only).";
+        if (!vehicleStr.matches("\\d+"))
+            return "❗ Vehicle number must be digits only.";
+
+        try (Connection c = db.open()) {
+
+            int vehicleId = Integer.parseInt(vehicleStr);
+
+            Integer customerId = getCustomerIdByVehicle(c, vehicleId);
+            if (customerId == null)
+                return "Vehicle is not associated with any customer.";
+
+            String realPhone = safeString(getCustomerPhoneSafe(c, customerId)).trim();
+            if (realPhone.isEmpty())
+                return "Customer has no phone stored in DB.";
+            if (!realPhone.equals(phone))
+                return "Phone validation failed (phone does not match this vehicle).";
+
+            Integer sessionId = getActiveSessionIdByVehicle(c, vehicleId);
+            if (sessionId == null)
+                return "No active parking session found for this vehicle.";
+
+            String st = getSessionState(c, sessionId);
+            if (st == null || !"WAITING_FOR_PAYMENT".equalsIgnoreCase(st.trim())) {
+                return "Payment is not available yet.\n" +
+                       "Current state: " + st + " (expected WAITING_FOR_PAYMENT).";
+            }
+
+            requestPaymentForExit(sessionId);
+            return "✅ Payment requested for session #" + sessionId;
+
+        } catch (RuntimeException re) {
+            return "❌ " + re.getMessage();
+        } catch (Exception e) {
+            return "❌ Failed to request payment: " + e.getMessage();
+        }
+    }
+
+      /** Client requests receipt by vehicle+phone (only after COMPLETED). */
+    public String requestReceiptByVehicleAndPhone(String vehicleNumber, String phoneNumber) {
+        try (Connection c = db.open()) {
+
+            int vehicleId = parseVehicleNumber(vehicleNumber);
+
+            Integer customerId = getCustomerIdByVehicle(c, vehicleId);
+            if (customerId == null) return "Vehicle is not linked to any customer.";
+
+            String realPhone = safeString(getCustomerPhoneSafe(c, customerId)).trim();
+            String reqPhone = safeString(phoneNumber).trim();
+            if (realPhone.isEmpty() || reqPhone.isEmpty() || !realPhone.equals(reqPhone)) {
+                return "Phone validation failed. Cannot issue receipt.";
+            }
+
+            Integer lastSessionId = getLastSessionIdByVehicle(c, vehicleId);
+            if (lastSessionId == null) return "No session found for this vehicle.";
+
+            SessionCore s = loadSessionCore(c, lastSessionId);
+            if (s.end == null) return "Session is still active. Receipt is available only after parking ends.";
+
+            generateReceipt(lastSessionId);
+            return "Receipt generated for session #" + lastSessionId;
+
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // =========================
     // ===== EXIT FLOW =========
     // =========================
 
-    /**
-     * Client requests to end parking (UI):
-     * - Validate active session
-     * - Move to MOVING_TO_EXIT
-     * - Assign a vacant conveyor (we choose one here because port requires conveyorId)
-     * - Ask CC to move to gate -> callback sets WAITING_FOR_PAYMENT + updates conveyor location
-     */
     public void requestExit(int sessionId) throws Exception {
 
         SessionCore s;
@@ -423,14 +589,12 @@ public class ParkingSessionManagementController {
 
             VehicleData v = getVehicleData(c, s.vehicleId);
 
-            // Choose a vacant conveyor in same lot that can carry this vehicle
             assignedConveyorId = findAvailableConveyorId(c, s.parkingLotId, v.weight);
             if (assignedConveyorId == null) {
                 c.rollback();
                 throw new RuntimeException("No available conveyor for exit");
             }
 
-            // Update session: assign conveyor + MOVING_TO_EXIT
             try (PreparedStatement ps = c.prepareStatement(
                     "UPDATE ParkingSession SET conveyorID=?, state=? WHERE ID=? AND endTime IS NULL")) {
                 ps.setInt(1, assignedConveyorId);
@@ -445,11 +609,9 @@ public class ParkingSessionManagementController {
             }
 
             setConveyorLastStatus(c, assignedConveyorId, "BUSY");
-
             c.commit();
         }
 
-        // Ask CC to move to gate (external)
         if (conveyorsPort != null) {
             int finalConveyorId = assignedConveyorId;
             SessionCore finalS = s;
@@ -482,14 +644,6 @@ public class ParkingSessionManagementController {
         }
     }
 
-    /**
-     * Called when session is WAITING_FOR_PAYMENT:
-     * - Calculate amount (until now) by PriceList/History
-     * - Apply club rules
-     * - Send payment request to PG (external)
-     * - On approved -> complete session + open barrier
-     * - Receipt is NOT auto-created (client can request generateReceipt)
-     */
     public void requestPaymentForExit(int sessionId) {
 
         try (Connection c = db.open()) {
@@ -518,7 +672,6 @@ public class ParkingSessionManagementController {
             );
 
             if (paymentGatewayPort == null) {
-                // No PG simulation attached -> just leave as is (UI can show finalAmount).
                 return;
             }
 
@@ -554,7 +707,6 @@ public class ParkingSessionManagementController {
         }
     }
 
-    /** Payment approved externally -> finalize session + release conveyor + open barrier (external). */
     private void confirmPaymentAndExit(int sessionId) throws Exception {
 
         int lotId;
@@ -617,7 +769,7 @@ public class ParkingSessionManagementController {
         if (customerId == null) return new PaymentComputation(base.amount, base.rate);
 
         LocalDateTime joinDate = getMembershipJoinDate(c, customerId);
-        if (joinDate == null) return new PaymentComputation(base.amount, base.rate); // not a member
+        if (joinDate == null) return new PaymentComputation(base.amount, base.rate);
 
         boolean free = isFreeFirstSessionInRegistrationMonth(
                 c, customerId, s.parkingLotId, s.start, joinDate
@@ -631,7 +783,6 @@ public class ParkingSessionManagementController {
         return new PaymentComputation(discounted, base.rate + " + ClubDiscount5%");
     }
 
-    /** For EXIT payment request (until "now"). */
     private double applyClubBenefitsForExitAmount(Connection c, Integer customerId, int parkingLotId,
                                                   LocalDateTime sessionStart, double baseAmount) throws SQLException {
 
@@ -658,17 +809,13 @@ public class ParkingSessionManagementController {
         YearMonth sessionYM = YearMonth.from(sessionStart);
         if (!joinYM.equals(sessionYM)) return false;
 
-        // Must be in preferred lots (at time of selectionDate <= sessionStart)
         if (!isPreferredLotAtTime(c, customerId, parkingLotId, sessionStart)) return false;
 
-        // Must be first completed session in that month (before this session)
         return !existsAnyCompletedSessionInJoinMonth(c, customerId, joinYM, sessionStart);
     }
 
     private boolean isPreferredLotAtTime(Connection c, int customerId, int parkingLotId, LocalDateTime at) throws SQLException {
 
-        // ⚠️ Ensure your table/columns match:
-        // PreferredParkingLot(customerID, parkingLotID, selectionDate)
         String sql =
                 "SELECT COUNT(*) " +
                         "FROM PreferredParkingLot " +
@@ -692,7 +839,6 @@ public class ParkingSessionManagementController {
         LocalDateTime from = joinYM.atDay(1).atStartOfDay();
         LocalDateTime to = joinYM.plusMonths(1).atDay(1).atStartOfDay();
 
-        // We detect customer sessions via Vehicle.customerID association
         String sql =
                 "SELECT COUNT(*) " +
                         "FROM ParkingSession s " +
@@ -728,6 +874,49 @@ public class ParkingSessionManagementController {
     // ===== DB HELPERS ========
     // =========================
 
+    private int parseVehicleNumber(String vehicleNumber) {
+        try {
+            return Integer.parseInt(vehicleNumber.trim());
+        } catch (Exception e) {
+            throw new RuntimeException("Invalid vehicle number: " + vehicleNumber);
+        }
+    }
+
+    private Integer getCustomerIdByPhone(Connection c, String phoneNumber) throws SQLException {
+      
+        String sql = "SELECT ID FROM Customer WHERE mobilePhon = ?";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, phoneNumber);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return rs.getInt(1);
+            }
+        }
+    }
+
+
+    private Integer getActiveSessionIdByVehicle(Connection c, int vehicleId) throws SQLException {
+        String sql = "SELECT TOP 1 ID FROM ParkingSession WHERE vehicleID=? AND endTime IS NULL ORDER BY startTime DESC";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, vehicleId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return rs.getInt(1);
+            }
+        }
+    }
+
+    private Integer getLastSessionIdByVehicle(Connection c, int vehicleId) throws SQLException {
+        String sql = "SELECT TOP 1 ID FROM ParkingSession WHERE vehicleID=? ORDER BY startTime DESC";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, vehicleId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                return rs.getInt(1);
+            }
+        }
+    }
+
     private String getSessionState(Connection c, int sessionId) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT state FROM ParkingSession WHERE ID=?")) {
             ps.setInt(1, sessionId);
@@ -762,7 +951,6 @@ public class ParkingSessionManagementController {
     }
 
     private LocalDateTime getMembershipJoinDate(Connection c, int customerId) throws SQLException {
-        // CustomerClubMembership(customerID, joinDate)
         String sql = "SELECT joinDate FROM CustomerClubMembership WHERE customerID=?";
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, customerId);
@@ -774,12 +962,9 @@ public class ParkingSessionManagementController {
         }
     }
 
-    /**
-     * ⚠️ Update the column name if needed (phone / phoneNumber / mobile / mobilePhone etc.)
-     * This is the ONLY place you might need to rename a column.
-     */
     private String getCustomerPhoneSafe(Connection c, int customerId) {
-        try (PreparedStatement ps = c.prepareStatement("SELECT phone FROM Customer WHERE ID=?")) {
+        try (PreparedStatement ps =
+                     c.prepareStatement("SELECT mobilePhon FROM Customer WHERE ID=?")) {
             ps.setInt(1, customerId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
@@ -789,6 +974,7 @@ public class ParkingSessionManagementController {
             return null;
         }
     }
+
 
     private String safeString(String s) {
         return s == null ? "" : s;
@@ -835,21 +1021,17 @@ public class ParkingSessionManagementController {
         return "SMALL";
     }
 
-    /**
-     * ✅ Your rule (no AVAILABLE state):
-     * Available = isActive=True AND Status='OPERATIONAL' AND MaxWeight ok AND not in active ParkingSession
-     */
     private Integer findAvailableConveyorId(Connection c, int parkingLotId, double vehicleWeight) throws SQLException {
 
         String sql =
                 "SELECT TOP 1 c.ID " +
-                        "FROM Conveyor c " +
-                        "WHERE c.ParkingLotID=? " +
-                        "  AND c.isActive=True " +
-                        "  AND c.Status='OPERATIONAL' " +
-                        "  AND c.MaxWeight >= ? " +
-                        "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
-                        "ORDER BY c.ID";
+                "FROM Conveyor c " +
+                "WHERE c.ParkingLotID=? " +
+                "  AND c.isActive=True " +
+                "  AND UCASE(c.Status)='OPERATIONAL' " +
+                "  AND c.MaxWeight >= ? " +
+                "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
+                "ORDER BY c.ID";
 
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, parkingLotId);
@@ -860,6 +1042,7 @@ public class ParkingSessionManagementController {
             }
         }
     }
+
 
     private ConveyorLoc getConveyorLoc(Connection c, int conveyorId) throws SQLException {
         String sql = "SELECT X, Y, Floor FROM Conveyor WHERE ID=?";
@@ -995,7 +1178,6 @@ public class ParkingSessionManagementController {
     }
 
     private void decrementLotSpacesIfPossible(Connection c, int parkingLotId) throws SQLException {
-        // You had this field name: availablaSpaces (typo) - keep it as you had.
         String sql =
                 "UPDATE ParkingLot SET availablaSpaces = IIF(availablaSpaces>0, availablaSpaces-1, 0) " +
                         "WHERE ID=?";
