@@ -238,9 +238,112 @@ public class ParkingLotDashboardUI extends JFrame {
         f.setVisible(true);
     }
 
-    // ===== STUBS =====
-    private void openConveyorScreen() {}
-    private void openPriceHistoryScreen() {}
-    private void openPriceListScreen() {}
-    private void findParkingLotById() {}
+ // ================= SECONDARY WINDOWS =================
+
+    private void openConveyorScreen() {
+        if (selectedParkingLot == null) {
+            JOptionPane.showMessageDialog(this, "Select a parking lot first.");
+            return;
+        }
+
+        if (!selectedParkingLot.isActive()) {
+            JOptionPane.showMessageDialog(this, "Parking lot is inactive.");
+            return;
+        }
+
+        ConveyorManagementUI ui =
+                new ConveyorManagementUI(conveyorController, parkingLotController);
+
+        ui.setParkingLotId(selectedParkingLot.getId());
+
+        JFrame f = new JFrame("Conveyors – ParkingLot " + selectedParkingLot.getId());
+        f.setContentPane(ui);
+        f.pack();
+        f.setLocationRelativeTo(this);
+        f.setVisible(true);
+    }
+
+    private void openPriceHistoryScreen() {
+        if (selectedParkingLot == null) {
+            JOptionPane.showMessageDialog(this, "Select a parking lot first.");
+            return;
+        }
+
+        if (!selectedParkingLot.isActive()) {
+            JOptionPane.showMessageDialog(this, "Parking lot is inactive.");
+            return;
+        }
+
+        PriceHistoryManagementUI ui =
+                new PriceHistoryManagementUI(priceHistoryController, priceListController);
+
+        ui.setParkingLotId(selectedParkingLot.getId());
+
+        JFrame f = new JFrame("Price History – ParkingLot " + selectedParkingLot.getId());
+        f.setContentPane(ui);
+        f.pack();
+        f.setLocationRelativeTo(this);
+        f.setVisible(true);
+    }
+
+    private void openPriceListScreen() {
+        JFrame f = new JFrame("Import Price List");
+        f.setContentPane(new PriceListImportViewUI(priceListController));
+        f.pack();
+        f.setLocationRelativeTo(this);
+        f.setVisible(true);
+    }
+
+    private void findParkingLotById() {
+        try {
+            String raw = (searchIdField.getText() == null) ? "" : searchIdField.getText().trim();
+            if (raw.isEmpty()) {
+                JOptionPane.showMessageDialog(this, "Enter ParkingLot ID.");
+                return;
+            }
+
+            int id = Integer.parseInt(raw);
+            ParkingLot p = parkingLotController.getParkingLot(id);
+
+            // אם החניון לא פעיל והמשתמש לא ביקש להציג לא פעילים
+            if (!p.isActive() && !showInactiveLots.isSelected()) {
+                JOptionPane.showMessageDialog(this,
+                        "Parking lot is inactive. Enable 'Show inactive' to view it.");
+                return;
+            }
+
+            // מרענן את הטבלה לפי מצב ה-checkbox (כדי שהשורה תהיה קיימת אם צריך)
+            loadParkingLots();
+
+            // מנסה למצוא את השורה בטבלה ולסמן אותה
+            for (int i = 0; i < model.getRowCount(); i++) {
+                if ((int) model.getValueAt(i, 0) == id) {
+                    table.setRowSelectionInterval(i, i);
+                    table.scrollRectToVisible(table.getCellRect(i, 0, true));
+                    return;
+                }
+            }
+
+            // fallback: אם משום מה לא נמצא בטבלה, עדיין נשמור ונציג בפרטים (הבחירה בטבלה לא תתבצע)
+            selectedParkingLot = p;
+            idField.setText(String.valueOf(p.getId()));
+            nameField.setText(p.getName());
+            streetField.setText(p.getStreet() == null ? "" : p.getStreet());
+            numberField.setText(p.getNumber() == null ? "" : p.getNumber().toString());
+            spacesField.setText(String.valueOf(p.getAvailableSpaces()));
+
+            // לבחור עיר ב-combo
+            for (int i = 0; i < cityCombo.getItemCount(); i++) {
+                if (cityCombo.getItemAt(i).getId() == p.getCity().getId()) {
+                    cityCombo.setSelectedIndex(i);
+                    break;
+                }
+            }
+
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(this, "Please enter a valid numeric ParkingLot ID.");
+        } catch (Exception e) {
+            JOptionPane.showMessageDialog(this, "Parking lot not found.");
+        }
+    }
 }
