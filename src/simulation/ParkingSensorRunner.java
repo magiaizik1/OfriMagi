@@ -8,6 +8,7 @@ import java.util.Random;
 import control.ParkingLotManagementController;
 import control.ParkingSessionManagementController;
 import control.ParkingSessionManagementController.SensorArrivalResult;
+import control.ParkingSessionManagementController;
 
 public class ParkingSensorRunner {
 
@@ -47,7 +48,7 @@ public class ParkingSensorRunner {
         System.out.println("📍 Parking lot: " + parkingLotId + " (" + lot.getName() + ")");
 
         try {
-            ParkingSessionManagementController.SensorArrivalResult result =
+            SensorArrivalResult result =
                     sessionController.simulateVehicleArrivalAndPark(parkingLotId);
 
             switch (result.outcome) {

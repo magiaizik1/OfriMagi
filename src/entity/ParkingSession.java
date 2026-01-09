@@ -1,5 +1,12 @@
 package entity;
 
+import control.AccessDb;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
 /**
@@ -114,5 +121,82 @@ public class ParkingSession {
 
     public void setState(String state) {
         this.state = state;
+    }
+
+    // =========================
+    // ===== Entity DB API =====
+    // =========================
+    //
+    // These methods are added to support ECB/OO design:
+    // Controller calls Entity methods; Entity performs DB operations.
+
+    /** Loads a ParkingSession entity from DB by session ID. */
+    public static ParkingSession loadById(AccessDb db, int sessionId) throws SQLException {
+        String sql =
+                "SELECT ID, vehicleID, parkingLotID, parkingSpotID, conveyorID, startTime, endTime, state " +
+                "FROM ParkingSession WHERE ID=?";
+
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setInt(1, sessionId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) throw new SQLException("Session not found: " + sessionId);
+
+                ParkingSession s = new ParkingSession();
+                s.id = rs.getInt("ID");
+                s.vehicleId = rs.getInt("vehicleID");
+                s.parkingLotId = rs.getInt("parkingLotID");
+                s.parkingSpotId = (Integer) rs.getObject("parkingSpotID");
+                s.conveyorId = (Integer) rs.getObject("conveyorID");
+
+                Timestamp st = rs.getTimestamp("startTime");
+                s.startTime = (st == null) ? null : st.toLocalDateTime();
+
+                Timestamp et = rs.getTimestamp("endTime");
+                s.endTime = (et == null) ? null : et.toLocalDateTime();
+
+                s.state = rs.getString("state");
+                return s;
+            }
+        }
+    }
+
+    /** Updates the session state in DB (only if session still active). */
+    public void updateState(AccessDb db, String newState) throws SQLException {
+        String sql =
+                "UPDATE ParkingSession SET state=? " +
+                "WHERE ID=? AND endTime IS NULL";
+
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setString(1, newState);
+            ps.setInt(2, this.id);
+            ps.executeUpdate();
+            this.state = newState;
+        }
+    }
+
+    /** Ends the session in DB by setting endTime=now and state=COMPLETED (only if active). */
+    public void close(AccessDb db) throws SQLException {
+        String sql =
+                "UPDATE ParkingSession " +
+                "SET endTime=?, state=? " +
+                "WHERE ID=? AND endTime IS NULL";
+
+        LocalDateTime now = LocalDateTime.now();
+
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setTimestamp(1, Timestamp.valueOf(now));
+            ps.setString(2, "COMPLETED");
+            ps.setInt(3, this.id);
+            ps.executeUpdate();
+
+            this.endTime = now;
+            this.state = "COMPLETED";
+        }
     }
 }

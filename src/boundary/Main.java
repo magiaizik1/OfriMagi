@@ -34,17 +34,22 @@ public class Main {
             // ===== Human actors GUI: Role selection =====
             RoleSelectUI roleSelect = new RoleSelectUI(new RoleSelectUI.RoleCallback() {
                 @Override
+
                 public void onAdmin() {
+
                     ParkingLotDashboardUI dashboard = new ParkingLotDashboardUI(
                             db,
                             parkingLotController,
                             cityController,
                             conveyorController,
                             priceHistoryController,
-                            priceListController
+                            priceListController,
+                            sessionController   // ⭐ זה מה שהיה חסר
                     );
+
                     dashboard.setVisible(true);
                 }
+
 
                 @Override
                 public void onClient() {

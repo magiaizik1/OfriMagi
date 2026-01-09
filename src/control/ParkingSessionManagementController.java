@@ -5,6 +5,7 @@ import boundary.GateSensorPort;
 import boundary.PaymentGatewayPort;
 import boundary.SmsGatewayPort;
 import entity.PriceList;
+import entity.ParkingSession;
 
 import java.sql.*;
 import java.time.Duration;
@@ -94,36 +95,14 @@ public class ParkingSessionManagementController {
 
     /** Used by flow logic. */
     public void updateSessionState(int sessionId, String newState) throws Exception {
-
-        String sql =
-                "UPDATE ParkingSession SET state=? " +
-                        "WHERE ID=? AND endTime IS NULL";
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-
-            ps.setString(1, newState);
-            ps.setInt(2, sessionId);
-            ps.executeUpdate();
-        }
+        ParkingSession s = ParkingSession.loadById(db, sessionId);
+        s.updateState(db, newState);
     }
 
     /** Internal finalization (endTime + COMPLETED). */
     public void endParkingSession(int sessionId) throws Exception {
-
-        String sql =
-                "UPDATE ParkingSession " +
-                        "SET endTime=?, state=? " +
-                        "WHERE ID=? AND endTime IS NULL";
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-
-            ps.setTimestamp(1, Timestamp.valueOf(LocalDateTime.now()));
-            ps.setString(2, "COMPLETED");
-            ps.setInt(3, sessionId);
-            ps.executeUpdate();
-        }
+        ParkingSession s = ParkingSession.loadById(db, sessionId);
+        s.close(db);
     }
 
     /** EXISTING UI – 6 columns. */
@@ -883,7 +862,7 @@ public class ParkingSessionManagementController {
     }
 
     private Integer getCustomerIdByPhone(Connection c, String phoneNumber) throws SQLException {
-      
+
         String sql = "SELECT ID FROM Customer WHERE mobilePhon = ?";
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setString(1, phoneNumber);
@@ -893,7 +872,6 @@ public class ParkingSessionManagementController {
             }
         }
     }
-
 
     private Integer getActiveSessionIdByVehicle(Connection c, int vehicleId) throws SQLException {
         String sql = "SELECT TOP 1 ID FROM ParkingSession WHERE vehicleID=? AND endTime IS NULL ORDER BY startTime DESC";
@@ -951,16 +929,21 @@ public class ParkingSessionManagementController {
     }
 
     private LocalDateTime getMembershipJoinDate(Connection c, int customerId) throws SQLException {
-        String sql = "SELECT joinDate FROM CustomerClubMembership WHERE customerID=?";
+
+        String sql = "SELECT joinDate FROM Membership WHERE customerId=?";
+
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, customerId);
+
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) return null;
+
                 Timestamp ts = rs.getTimestamp(1);
                 return ts == null ? null : ts.toLocalDateTime();
             }
         }
     }
+
 
     private String getCustomerPhoneSafe(Connection c, int customerId) {
         try (PreparedStatement ps =
@@ -974,7 +957,6 @@ public class ParkingSessionManagementController {
             return null;
         }
     }
-
 
     private String safeString(String s) {
         return s == null ? "" : s;
@@ -1042,7 +1024,6 @@ public class ParkingSessionManagementController {
             }
         }
     }
-
 
     private ConveyorLoc getConveyorLoc(Connection c, int conveyorId) throws SQLException {
         String sql = "SELECT X, Y, Floor FROM Conveyor WHERE ID=?";

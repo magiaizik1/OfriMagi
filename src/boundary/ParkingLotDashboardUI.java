@@ -4,6 +4,7 @@ import control.AccessDb;
 import control.CityManagementController;
 import control.ConveyorManagementController;
 import control.ParkingLotManagementController;
+import control.ParkingSessionManagementController;
 import control.PriceHistoryManagementController;
 import control.PriceListManagementController;
 import control.ReportController; // ✅ NEW
@@ -26,7 +27,8 @@ public class ParkingLotDashboardUI extends JFrame {
     private final PriceHistoryManagementController priceHistoryController;
     private final PriceListManagementController priceListController;
 
-    private final ReportController reportController = new ReportController(); // ✅ NEW
+    private final ReportController reportController;
+
 
     private JButton parkingSessionBtn;
     private JTable table;
@@ -58,7 +60,8 @@ public class ParkingLotDashboardUI extends JFrame {
             CityManagementController cityController,
             ConveyorManagementController conveyorController,
             PriceHistoryManagementController priceHistoryController,
-            PriceListManagementController priceListController
+            PriceListManagementController priceListController,
+            ParkingSessionManagementController parkingSessionController
     ) {
         this.db = db;
         this.parkingLotController = parkingLotController;
@@ -66,6 +69,11 @@ public class ParkingLotDashboardUI extends JFrame {
         this.conveyorController = conveyorController;
         this.priceHistoryController = priceHistoryController;
         this.priceListController = priceListController;
+
+        // ✅ אתחול של reportController
+        this.reportController = new ReportController(
+
+        );
 
         setTitle("ParkWise – Parking Lots");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);

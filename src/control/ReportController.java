@@ -12,14 +12,18 @@ import java.util.Map;
 
 public class ReportController {
 
-    // התאמה מלאה למבנה הפרויקט שלך
+    // נתיבים לפי הפרויקט שלך
     private static final String DB_PATH = "db/parkwise_OfriMagi.accdb";
     private static final String REPORT_PATH = "reports/Annual_Parking_Summary.jrxml";
+
+    public ReportController() {
+        // אין תלות בקונטרולרים אחרים
+    }
 
     public void showAnnualSummaryReport(int year) {
 
         try {
-            // 1️⃣ בדיקות קיום
+            // בדיקה שהקבצים קיימים
             File dbFile = new File(DB_PATH);
             if (!dbFile.exists()) {
                 throw new IllegalStateException("DB not found: " + dbFile.getAbsolutePath());
@@ -30,22 +34,23 @@ public class ReportController {
                 throw new IllegalStateException("Report not found: " + reportFile.getAbsolutePath());
             }
 
-            // 2️⃣ חיבור ל־Access
+            // חיבור ל-Access
             String dbUrl = "jdbc:ucanaccess://" + dbFile.getAbsolutePath();
             try (Connection conn = DriverManager.getConnection(dbUrl)) {
 
-                // 3️⃣ קומפילציה
+                // קומפילציה של הדוח
                 JasperReport report =
                         JasperCompileManager.compileReport(reportFile.getAbsolutePath());
 
-                // 4️⃣ פרמטרים
+                // פרמטרים
                 Map<String, Object> params = new HashMap<>();
                 params.put("EnterYear", year);
 
-                // 5️⃣ מילוי והצגה
+                // מילוי הדוח מה-DB (SQL מתוך ה-jrxml!)
                 JasperPrint print =
                         JasperFillManager.fillReport(report, params, conn);
 
+                // הצגה
                 JasperViewer.viewReport(print, false);
             }
 
