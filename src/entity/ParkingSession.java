@@ -1,12 +1,5 @@
 package entity;
 
-import control.AccessDb;
-
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.time.LocalDateTime;
 
 /**
@@ -17,12 +10,11 @@ import java.time.LocalDateTime;
 public class ParkingSession {
 
     private int id;
-
     private int vehicleId;
     private int parkingLotId;
 
     /**
-     * The parking spot where the vehicle is parked.
+     * The parking spot currently assigned to the vehicle.
      * NULL while the vehicle is not yet parked.
      */
     private Integer parkingSpotId;
@@ -38,8 +30,6 @@ public class ParkingSession {
 
     /**
      * Represents the current state of the parking session.
-     * This field allows the system to know at each moment
-     * where the vehicle is and what stage it is in.
      *
      * Possible values:
      * ARRIVED_AT_GATE
@@ -53,9 +43,45 @@ public class ParkingSession {
      */
     private String state;
 
-    public ParkingSession() {}
+    public ParkingSession(int id, int vehicleId, int parkingLotId, Integer parkingSpotId,
+                          Integer conveyorId, LocalDateTime startTime, LocalDateTime endTime, String state) {
+        this.id = id;
+        this.vehicleId = vehicleId;
+        this.parkingLotId = parkingLotId;
+        this.parkingSpotId = parkingSpotId;
+        this.conveyorId = conveyorId;
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.state = state;
+    }
 
-    // ---------- Getters ----------
+    public ParkingSession(int vehicleId, int parkingLotId, LocalDateTime startTime, String state) {
+        this.vehicleId = vehicleId;
+        this.parkingLotId = parkingLotId;
+        this.startTime = startTime;
+        this.state = state;
+    }
+
+    // -------- Business Logic (NO DB) --------
+
+    public void updateState(String newState) {
+        this.state = newState;
+    }
+
+    public void assignParkingSpot(Integer parkingSpotId) {
+        this.parkingSpotId = parkingSpotId;
+    }
+
+    public void assignConveyor(Integer conveyorId) {
+        this.conveyorId = conveyorId;
+    }
+
+    public void closeSession(LocalDateTime endTime) {
+        this.endTime = endTime;
+        this.state = "COMPLETED";
+    }
+
+    // -------- Getters --------
 
     public int getId() {
         return id;
@@ -89,18 +115,10 @@ public class ParkingSession {
         return state;
     }
 
-    // ---------- Setters ----------
+    // -------- Setters --------
 
     public void setId(int id) {
         this.id = id;
-    }
-
-    public void setVehicleId(int vehicleId) {
-        this.vehicleId = vehicleId;
-    }
-
-    public void setParkingLotId(int parkingLotId) {
-        this.parkingLotId = parkingLotId;
     }
 
     public void setParkingSpotId(Integer parkingSpotId) {
@@ -111,92 +129,11 @@ public class ParkingSession {
         this.conveyorId = conveyorId;
     }
 
-    public void setStartTime(LocalDateTime startTime) {
-        this.startTime = startTime;
-    }
-
     public void setEndTime(LocalDateTime endTime) {
         this.endTime = endTime;
     }
 
     public void setState(String state) {
         this.state = state;
-    }
-
-    // =========================
-    // ===== Entity DB API =====
-    // =========================
-    //
-    // These methods are added to support ECB/OO design:
-    // Controller calls Entity methods; Entity performs DB operations.
-
-    /** Loads a ParkingSession entity from DB by session ID. */
-    public static ParkingSession loadById(AccessDb db, int sessionId) throws SQLException {
-        String sql =
-                "SELECT ID, vehicleID, parkingLotID, parkingSpotID, conveyorID, startTime, endTime, state " +
-                "FROM ParkingSession WHERE ID=?";
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-
-            ps.setInt(1, sessionId);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) throw new SQLException("Session not found: " + sessionId);
-
-                ParkingSession s = new ParkingSession();
-                s.id = rs.getInt("ID");
-                s.vehicleId = rs.getInt("vehicleID");
-                s.parkingLotId = rs.getInt("parkingLotID");
-                s.parkingSpotId = (Integer) rs.getObject("parkingSpotID");
-                s.conveyorId = (Integer) rs.getObject("conveyorID");
-
-                Timestamp st = rs.getTimestamp("startTime");
-                s.startTime = (st == null) ? null : st.toLocalDateTime();
-
-                Timestamp et = rs.getTimestamp("endTime");
-                s.endTime = (et == null) ? null : et.toLocalDateTime();
-
-                s.state = rs.getString("state");
-                return s;
-            }
-        }
-    }
-
-    /** Updates the session state in DB (only if session still active). */
-    public void updateState(AccessDb db, String newState) throws SQLException {
-        String sql =
-                "UPDATE ParkingSession SET state=? " +
-                "WHERE ID=? AND endTime IS NULL";
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-
-            ps.setString(1, newState);
-            ps.setInt(2, this.id);
-            ps.executeUpdate();
-            this.state = newState;
-        }
-    }
-
-    /** Ends the session in DB by setting endTime=now and state=COMPLETED (only if active). */
-    public void close(AccessDb db) throws SQLException {
-        String sql =
-                "UPDATE ParkingSession " +
-                "SET endTime=?, state=? " +
-                "WHERE ID=? AND endTime IS NULL";
-
-        LocalDateTime now = LocalDateTime.now();
-
-        try (Connection c = db.open();
-             PreparedStatement ps = c.prepareStatement(sql)) {
-
-            ps.setTimestamp(1, Timestamp.valueOf(now));
-            ps.setString(2, "COMPLETED");
-            ps.setInt(3, this.id);
-            ps.executeUpdate();
-
-            this.endTime = now;
-            this.state = "COMPLETED";
-        }
     }
 }

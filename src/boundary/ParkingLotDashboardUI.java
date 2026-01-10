@@ -71,9 +71,8 @@ public class ParkingLotDashboardUI extends JFrame {
         this.priceListController = priceListController;
 
         // ✅ אתחול של reportController
-        this.reportController = new ReportController(
+        this.reportController = new ReportController(db);
 
-        );
 
         setTitle("ParkWise – Parking Lots");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);

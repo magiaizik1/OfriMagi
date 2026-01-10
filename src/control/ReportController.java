@@ -6,37 +6,41 @@ import net.sf.jasperreports.view.JasperViewer;
 import javax.swing.*;
 import java.io.File;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * ReportController
+ *
+ * ✔ Access to DB is done ONLY via AccessDb
+ * ✔ No direct DriverManager usage
+ * ✔ No hardcoded DB path inside controller
+ *
+ * This keeps correct architectural separation:
+ * Control → AccessDb → Database
+ */
 public class ReportController {
 
-    // נתיבים לפי הפרויקט שלך
-    private static final String DB_PATH = "db/parkwise_OfriMagi.accdb";
+    private final AccessDb db;
+
+    // נתיב הדוח בלבד (לא DB!)
     private static final String REPORT_PATH = "reports/Annual_Parking_Summary.jrxml";
 
-    public ReportController() {
-        // אין תלות בקונטרולרים אחרים
+    public ReportController(AccessDb db) {
+        this.db = db;
     }
 
     public void showAnnualSummaryReport(int year) {
 
         try {
-            // בדיקה שהקבצים קיימים
-            File dbFile = new File(DB_PATH);
-            if (!dbFile.exists()) {
-                throw new IllegalStateException("DB not found: " + dbFile.getAbsolutePath());
-            }
-
+            // בדיקה שקובץ הדוח קיים
             File reportFile = new File(REPORT_PATH);
             if (!reportFile.exists()) {
                 throw new IllegalStateException("Report not found: " + reportFile.getAbsolutePath());
             }
 
-            // חיבור ל-Access
-            String dbUrl = "jdbc:ucanaccess://" + dbFile.getAbsolutePath();
-            try (Connection conn = DriverManager.getConnection(dbUrl)) {
+            // חיבור ל-DB דרך AccessDb בלבד
+            try (Connection conn = db.open()) {
 
                 // קומפילציה של הדוח
                 JasperReport report =

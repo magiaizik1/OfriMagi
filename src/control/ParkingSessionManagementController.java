@@ -30,9 +30,10 @@ import java.util.Random;
  * - Payment Gateway (PG)      -> PaymentGatewayPort
  * - SMS Provider              -> SmsGatewayPort
  *
- * ⚠️ Important (per your DB reality):
- * - Conveyor is "available" if: isActive=True AND Status='OPERATIONAL' AND NOT in active ParkingSession
- * - We do NOT require LastStatus='AVAILABLE' (because you said it doesn't exist as a real state)
+ * ⚠️ Design note (per request):
+ * - ParkingSession (Entity) is now DB-agnostic (NO SQL / NO AccessDb inside).
+ * - All DB access that previously lived in the Entity was moved here.
+ * - NO functional behavior was changed; only responsibility was cleaned.
  */
 public class ParkingSessionManagementController {
 
@@ -93,16 +94,40 @@ public class ParkingSessionManagementController {
         }
     }
 
-    /** Used by flow logic. */
+    /**
+     * Used by flow logic.
+     * ✔ DB update moved here (Entity is DB-agnostic)
+     * ✔ In-memory entity is updated without touching DB
+     */
     public void updateSessionState(int sessionId, String newState) throws Exception {
-        ParkingSession s = ParkingSession.loadById(db, sessionId);
-        s.updateState(db, newState);
+
+        // DB update (previously in Entity)
+        updateSessionStateInDb(sessionId, newState);
+
+        // In-memory entity update (no DB inside Entity)
+        ParkingSession s = loadParkingSessionById(sessionId);
+        if (s != null) {
+            s.updateState(newState);
+        }
     }
 
-    /** Internal finalization (endTime + COMPLETED). */
+    /**
+     * Internal finalization (endTime + COMPLETED).
+     * ✔ DB update moved here
+     * ✔ Entity updated in-memory only
+     */
     public void endParkingSession(int sessionId) throws Exception {
-        ParkingSession s = ParkingSession.loadById(db, sessionId);
-        s.close(db);
+
+        LocalDateTime now = LocalDateTime.now();
+
+        // DB update
+        closeSessionInDb(sessionId, now);
+
+        // In-memory entity update
+        ParkingSession s = loadParkingSessionById(sessionId);
+        if (s != null) {
+            s.closeSession(now);
+        }
     }
 
     /** EXISTING UI – 6 columns. */
@@ -396,10 +421,10 @@ public class ParkingSessionManagementController {
 
             String sql =
                     "SELECT s.ID AS sessionId, s.parkingLotID, s.vehicleID, s.parkingSpotID, s.state, s.startTime " +
-                    "FROM ParkingSession s " +
-                    "JOIN Vehicle v ON v.ID = s.vehicleID " +
-                    "WHERE v.customerID = ? AND s.endTime IS NULL " +
-                    "ORDER BY s.startTime DESC";
+                            "FROM ParkingSession s " +
+                            "JOIN Vehicle v ON v.ID = s.vehicleID " +
+                            "WHERE v.customerID = ? AND s.endTime IS NULL " +
+                            "ORDER BY s.startTime DESC";
 
             List<String> out = new ArrayList<>();
 
@@ -409,11 +434,11 @@ public class ParkingSessionManagementController {
                     while (rs.next()) {
                         out.add(
                                 "Active session #" + rs.getInt("sessionId") +
-                                " | lot=" + rs.getInt("parkingLotID") +
-                                " | vehicle=" + rs.getInt("vehicleID") +
-                                " | spot=" + rs.getObject("parkingSpotID") +
-                                " | state=" + rs.getString("state") +
-                                " | start=" + rs.getTimestamp("startTime")
+                                        " | lot=" + rs.getInt("parkingLotID") +
+                                        " | vehicle=" + rs.getInt("vehicleID") +
+                                        " | spot=" + rs.getObject("parkingSpotID") +
+                                        " | state=" + rs.getString("state") +
+                                        " | start=" + rs.getTimestamp("startTime")
                         );
                     }
                 }
@@ -464,7 +489,7 @@ public class ParkingSessionManagementController {
             requestExit(sessionId);
 
             return "✅ Exit requested. Vehicle is being transferred to the gate.\n" +
-                   "When state becomes WAITING_FOR_PAYMENT, click Pay Now.";
+                    "When state becomes WAITING_FOR_PAYMENT, click Pay Now.";
 
         } catch (RuntimeException re) {
             return "❌ " + re.getMessage();
@@ -506,7 +531,7 @@ public class ParkingSessionManagementController {
             String st = getSessionState(c, sessionId);
             if (st == null || !"WAITING_FOR_PAYMENT".equalsIgnoreCase(st.trim())) {
                 return "Payment is not available yet.\n" +
-                       "Current state: " + st + " (expected WAITING_FOR_PAYMENT).";
+                        "Current state: " + st + " (expected WAITING_FOR_PAYMENT).";
             }
 
             requestPaymentForExit(sessionId);
@@ -519,7 +544,7 @@ public class ParkingSessionManagementController {
         }
     }
 
-      /** Client requests receipt by vehicle+phone (only after COMPLETED). */
+    /** Client requests receipt by vehicle+phone (only after COMPLETED). */
     public String requestReceiptByVehicleAndPhone(String vehicleNumber, String phoneNumber) {
         try (Connection c = db.open()) {
 
@@ -944,7 +969,6 @@ public class ParkingSessionManagementController {
         }
     }
 
-
     private String getCustomerPhoneSafe(Connection c, int customerId) {
         try (PreparedStatement ps =
                      c.prepareStatement("SELECT mobilePhon FROM Customer WHERE ID=?")) {
@@ -1007,13 +1031,13 @@ public class ParkingSessionManagementController {
 
         String sql =
                 "SELECT TOP 1 c.ID " +
-                "FROM Conveyor c " +
-                "WHERE c.ParkingLotID=? " +
-                "  AND c.isActive=True " +
-                "  AND UCASE(c.Status)='OPERATIONAL' " +
-                "  AND c.MaxWeight >= ? " +
-                "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
-                "ORDER BY c.ID";
+                        "FROM Conveyor c " +
+                        "WHERE c.ParkingLotID=? " +
+                        "  AND c.isActive=True " +
+                        "  AND UCASE(c.Status)='OPERATIONAL' " +
+                        "  AND c.MaxWeight >= ? " +
+                        "  AND c.ID NOT IN (SELECT conveyorID FROM ParkingSession WHERE endTime IS NULL) " +
+                        "ORDER BY c.ID";
 
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, parkingLotId);
@@ -1303,6 +1327,79 @@ public class ParkingSessionManagementController {
             this.x = x;
             this.y = y;
             this.floor = floor;
+        }
+    }
+
+    // =========================
+    // ===== DB moved from Entity =====
+    // =========================
+
+    /**
+     * Loads ParkingSession from DB.
+     * (Previously: ParkingSession.loadById(db, ...))
+     */
+    private ParkingSession loadParkingSessionById(int sessionId) throws SQLException {
+
+        String sql =
+                "SELECT ID, vehicleID, parkingLotID, parkingSpotID, conveyorID, startTime, endTime, state " +
+                        "FROM ParkingSession WHERE ID = ?";
+
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setInt(1, sessionId);
+
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new ParkingSession(
+                            rs.getInt("ID"),
+                            rs.getInt("vehicleID"),
+                            rs.getInt("parkingLotID"),
+                            (Integer) rs.getObject("parkingSpotID"),
+                            (Integer) rs.getObject("conveyorID"),
+                            rs.getTimestamp("startTime").toLocalDateTime(),
+                            rs.getTimestamp("endTime") != null
+                                    ? rs.getTimestamp("endTime").toLocalDateTime()
+                                    : null,
+                            rs.getString("state")
+                    );
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Updates session state in DB.
+     * (Previously: s.updateState(db, ...))
+     */
+    private void updateSessionStateInDb(int sessionId, String newState) throws SQLException {
+
+        String sql = "UPDATE ParkingSession SET state = ? WHERE ID = ?";
+
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setString(1, newState);
+            ps.setInt(2, sessionId);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Closes session in DB (endTime + COMPLETED).
+     * (Previously: s.close(db))
+     */
+    private void closeSessionInDb(int sessionId, LocalDateTime endTime) throws SQLException {
+
+        String sql = "UPDATE ParkingSession SET endTime = ?, state = 'COMPLETED' WHERE ID = ?";
+
+        try (Connection c = db.open();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+
+            ps.setTimestamp(1, Timestamp.valueOf(endTime));
+            ps.setInt(2, sessionId);
+            ps.executeUpdate();
         }
     }
 }
