@@ -44,7 +44,7 @@ public class Main {
                             conveyorController,
                             priceHistoryController,
                             priceListController,
-                            sessionController   // ⭐ זה מה שהיה חסר
+                            sessionController  
                     );
 
                     dashboard.setVisible(true);
