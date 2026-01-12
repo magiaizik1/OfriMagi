@@ -142,153 +142,130 @@ public class ParkingSessionManagementController {
         }
     }
 
-    public SensorArrivalResult simulateVehicleArrivalAndPark(int parkingLotId) throws Exception {
+    public SensorArrivalResult simulateVehicleArrivalAndPark(int ignoredParkingLotId) throws Exception {
 
-        Integer vehicleId;
-        Integer conveyorId;
-        Integer spotId;
-        int sessionId;
+        final int fixedLotId = 14; // חניון 14 בלבד
+
+        Integer vehicleId = null;
+        Integer conveyorId = null;
+        Integer spotId = null;
+        int sessionId = -1;
 
         try (Connection c = db.open()) {
             c.setAutoCommit(false);
 
-            vehicleId = db.pickRandomFreeVehicle(c);
+            // 1) רכבים חופשיים
+            List<Integer> freeVehicles = db.getFreeVehicleIds(c);
+            if (freeVehicles == null || freeVehicles.isEmpty()) {
+                c.rollback();
+                return new SensorArrivalResult("NO_VEHICLE", fixedLotId, null, null, null, null);
+            }
+
+            // 2) חניות פנויות בחניון 14
+            List<AccessDb.SpotRow> spots = db.getAvailableSpots(c, fixedLotId);
+            if (spots == null || spots.isEmpty()) {
+                c.rollback();
+                return new SensorArrivalResult("LOT_FULL", fixedLotId, null, null, null, null);
+            }
+
+            boolean sawAnyConveyorMatch = false;
+
+            // 3) נסה רכבים אחד אחד: מסוע שמתאים למשקל + חניה שמתאימה לגודל
+            for (int vId : freeVehicles) {
+
+                AccessDb.VehicleDataRow vRow = db.getVehicleData(c, vId);
+                VehicleData v = new VehicleData(vRow.id, normalizeSize(vRow.size), vRow.weight);
+
+                Integer candConveyorId = db.findAvailableConveyorId(c, fixedLotId, v.weight);
+                if (candConveyorId == null) {
+                    continue;
+                }
+                sawAnyConveyorMatch = true;
+
+                AccessDb.ConveyorLocRow clRow = db.getConveyorLoc(c, candConveyorId);
+                ConveyorLoc cl = new ConveyorLoc(clRow.x, clRow.y, clRow.floor);
+
+                Integer candSpotId = chooseNearestSpot(spots, v.size, cl.floor, cl.x, cl.y);
+                if (candSpotId == null) {
+                    continue; // יש מסוע מתאים אבל אין חניה שמתאימה לגודל הרכב
+                }
+
+                // מצאנו קומבינציה עובדת
+                vehicleId = vId;
+                conveyorId = candConveyorId;
+                spotId = candSpotId;
+                break;
+            }
+
             if (vehicleId == null) {
                 c.rollback();
-                return new SensorArrivalResult("NO_VEHICLE", parkingLotId, null, null, null, null);
+                if (!sawAnyConveyorMatch) {
+                    return new SensorArrivalResult("WAITING_FOR_CONVEYOR", fixedLotId, null, null, null, null);
+                }
+                return new SensorArrivalResult("LOT_FULL", fixedLotId, null, null, null, null);
             }
 
-            AccessDb.VehicleDataRow vRow = db.getVehicleData(c, vehicleId);
-            VehicleData v = new VehicleData(vRow.id, normalizeSize(vRow.size), vRow.weight);
+            // 4) צור סשן אמיתי
+            db.setConveyorLastStatus(c, conveyorId, "OPERATIONAL");
 
-            conveyorId = db.findAvailableConveyorId(c, parkingLotId, v.weight);
-            if (conveyorId == null) {
-                c.rollback();
-                return new SensorArrivalResult("WAITING_FOR_CONVEYOR", parkingLotId, vehicleId, null, null, null);
-            }
-
-            AccessDb.ConveyorLocRow clRow = db.getConveyorLoc(c, conveyorId);
-            ConveyorLoc cl = new ConveyorLoc(clRow.x, clRow.y, clRow.floor);
-
-            List<AccessDb.SpotRow> spots = db.getAvailableSpots(c, parkingLotId);
-            spotId = chooseNearestSpot(spots, v.size, cl.floor, cl.x, cl.y);
-            if (spotId == null) {
-                c.rollback();
-                return new SensorArrivalResult("LOT_FULL", parkingLotId, vehicleId, conveyorId, null, null);
-            }
-
-            db.setConveyorLastStatus(c, conveyorId, "BUSY");
-            sessionId = db.insertParkingSessionReturningId(c, parkingLotId, vehicleId, spotId, conveyorId, "MOVING_TO_PARKING");
-            db.decrementLotSpacesIfPossible(c, parkingLotId);
+            sessionId = db.insertParkingSessionReturningId(
+                    c, fixedLotId, vehicleId, spotId, conveyorId, "MOVING_TO_PARKING"
+            );
+            db.decrementLotSpacesIfPossible(c, fixedLotId);
 
             c.commit();
         }
 
         if (gateSensorPort != null) {
-            gateSensorPort.openBarrier(parkingLotId);
+            gateSensorPort.openBarrier(fixedLotId);
         }
 
-        if (conveyorsPort != null) {
-            int finalVehicleId = vehicleId;
-            int finalConveyorId = conveyorId;
-            int finalSpotId = spotId;
-            int finalSessionId = sessionId;
-
-            conveyorsPort.moveToParkingSpot(finalSessionId, finalConveyorId, finalVehicleId, finalSpotId,
-                    new ConveyorsControllerPort.MoveCallback() {
-                        @Override
-                        public void onMoveCompleted(String commandId, int newX, int newY, int newFloor) {
-                            try (Connection c2 = db.open()) {
-                                c2.setAutoCommit(false);
-
-                                db.updateSessionStateTx(c2, finalSessionId, "PARKED");
-                                db.setConveyorLastStatus(c2, finalConveyorId, "IDLE");
-                                db.updateConveyorPositionTx(c2, finalConveyorId, newX, newY, newFloor);
-
-                                c2.commit();
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            }
-
-                            // SMS optional
-                            try (Connection c3 = db.open()) {
-                                Integer customerId = db.getCustomerIdByVehicle(c3, finalVehicleId);
-                                if (customerId != null && smsGatewayPort != null) {
-                                    String phone = db.getCustomerPhoneSafe(c3, customerId);
-                                    if (phone != null && !phone.isEmpty()) {
-                                        smsGatewayPort.sendSms(
-                                                phone,
-                                                "ParkWise: vehicle " + finalVehicleId +
-                                                        " parked at lot " + parkingLotId +
-                                                        ", spot " + finalSpotId +
-                                                        " (session " + finalSessionId + ")"
-                                        );
-                                    }
-                                }
-                            } catch (Exception ignore) {}
-                        }
-
-                        @Override
-                        public void onMoveFailed(String commandId, String reason) {
-                            try {
-                                updateSessionState(finalSessionId, "ERROR_MOVE_TO_PARKING");
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            }
-                        }
-                    });
-        }
-
-        return new SensorArrivalResult("OK", parkingLotId, vehicleId, conveyorId, spotId, sessionId);
+        
+        return new SensorArrivalResult("OK", fixedLotId, vehicleId, conveyorId, spotId, sessionId);
     }
+
 
     // =========================
     // ===== CLIENT UI FLOW ====
     // =========================
 
- // =========================
- // ===== CLIENT UI FLOW =====
- // =========================
+    public List<String> getActiveParkingDetailsByPhone(String phoneNumber) {
 
- /** Client enters phone -> system shows active parking details. */
- public List<String> getActiveParkingDetailsByPhone(String phoneNumber) {
+        String phone = safeString(phoneNumber).trim();
 
-     String phone = safeString(phoneNumber).trim();
+        if (phone.isEmpty())
+            return List.of("❗ Please enter phone number.");
+        if (!phone.matches("\\d{9,10}"))
+            return List.of("❗ Phone must contain 9-10 digits (numbers only).");
 
-     if (phone.isEmpty())
-         return List.of("❗ Please enter phone number.");
-     if (!phone.matches("\\d{9,10}"))
-         return List.of("❗ Phone must contain 9-10 digits (numbers only).");
+        try {
 
-     try {
+            List<Object[]> rows = db.getActiveParkingDetailsByPhoneRaw(phone);
 
-         List<Object[]> rows = db.getActiveParkingDetailsByPhoneRaw(phone);
+            if (rows.isEmpty())
+                return List.of("No active parking sessions for this phone.");
 
-         if (rows.isEmpty())
-             return List.of("No active parking sessions for this phone.");
+            List<String> out = new ArrayList<>();
 
-         List<String> out = new ArrayList<>();
+            for (Object[] r : rows) {
+                out.add(
+                        "Active session #" + r[0] +
+                                " | lot=" + r[1] +
+                                " | vehicle=" + r[2] +
+                                " | spot=" + r[3] +
+                                " | state=" + r[4] +
+                                " | start=" + r[5]
+                );
+            }
 
-         for (Object[] r : rows) {
-             out.add(
-                     "Active session #" + r[0] +
-                             " | lot=" + r[1] +
-                             " | vehicle=" + r[2] +
-                             " | spot=" + r[3] +
-                             " | state=" + r[4] +
-                             " | start=" + r[5]
-             );
-         }
+            return out;
 
-         return out;
-
-     } catch (SQLException e) {
-         return List.of("❌ Database error while searching phone. (Check Customer.mobilePhon column name)");
-     } catch (Exception e) {
-         return List.of("❌ Unexpected error: " + e.getMessage());
-     }
- }
-
+        } catch (SQLException e) {
+            return List.of("❌ Database error while searching phone.");
+        } catch (Exception e) {
+            return List.of("❌ Unexpected error: " + e.getMessage());
+        }
+    }
 
     public String requestEndParkingByVehicleAndPhone(String vehicleNumber, String phoneNumber) {
         String phone = safeString(phoneNumber).trim();
@@ -306,7 +283,7 @@ public class ParkingSessionManagementController {
 
             String realPhone = safeString(db.getCustomerPhoneSafe(c, customerId)).trim();
             if (realPhone.isEmpty()) return "Customer has no phone stored in DB.";
-            if (!realPhone.equals(phone)) return "Phone validation failed (phone does not match this vehicle).";
+            if (!realPhone.equals(phone)) return "Phone validation failed.";
 
             Integer sessionId = db.getActiveSessionIdByVehicle(c, vehicleId);
             if (sessionId == null) return "No active parking session found for this vehicle.";
@@ -337,14 +314,14 @@ public class ParkingSessionManagementController {
 
             String realPhone = safeString(db.getCustomerPhoneSafe(c, customerId)).trim();
             if (realPhone.isEmpty()) return "Customer has no phone stored in DB.";
-            if (!realPhone.equals(phone)) return "Phone validation failed (phone does not match this vehicle).";
+            if (!realPhone.equals(phone)) return "Phone validation failed.";
 
             Integer sessionId = db.getActiveSessionIdByVehicle(c, vehicleId);
             if (sessionId == null) return "No active parking session found for this vehicle.";
 
             String st = db.getSessionState(c, sessionId);
             if (st == null || !"WAITING_FOR_PAYMENT".equalsIgnoreCase(st.trim())) {
-                return "Payment is not available yet.\nCurrent state: " + st + " (expected WAITING_FOR_PAYMENT).";
+                return "Payment is not available yet.\nCurrent state: " + st;
             }
 
             requestPaymentForExit(sessionId);
@@ -410,7 +387,7 @@ public class ParkingSessionManagementController {
             }
 
             db.assignConveyorAndSetStateForExit(c, sessionId, assignedConveyorId, "MOVING_TO_EXIT");
-            db.setConveyorLastStatus(c, assignedConveyorId, "BUSY");
+            db.setConveyorLastStatus(c, assignedConveyorId, "OPERATIONAL");
 
             c.commit();
         }
@@ -505,7 +482,6 @@ public class ParkingSessionManagementController {
     }
 
     private void confirmPaymentAndExit(int sessionId) throws Exception {
-
         int lotId;
         Integer conveyorId;
 
@@ -518,9 +494,10 @@ public class ParkingSessionManagementController {
             conveyorId = db.getActiveSessionConveyorId(c, sessionId);
 
             db.completeSessionNow(c, sessionId);
+            db.incrementLotSpacesIfPossible(c, lotId);
 
             if (conveyorId != null) {
-                db.setConveyorLastStatus(c, conveyorId, "IDLE");
+                db.setConveyorLastStatus(c, conveyorId, "OPERATIONAL");
             }
 
             c.commit();

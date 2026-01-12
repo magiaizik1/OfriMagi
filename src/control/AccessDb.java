@@ -52,7 +52,7 @@ public final class AccessDb {
     }
 
     // =========================================================
-    // ===== DTOs (raw DB rows) =================================
+    // ===== DTOs ==============================================
     // =========================================================
 
     public static final class VehicleDataRow {
@@ -108,7 +108,7 @@ public final class AccessDb {
     }
 
     // =========================================================
-    // ===== ParkingSession basic CRUD =========================
+    // ===== ParkingSession CRUD ===============================
     // =========================================================
 
     public void insertParkingSession(int parkingLotId, int vehicleId, int spotId, int conveyorId, String state) throws SQLException {
@@ -194,7 +194,7 @@ public final class AccessDb {
     }
 
     // =========================================================
-    // ===== Manager tables queries ============================
+    // ===== Manager queries ===================================
     // =========================================================
 
     public List<Object[]> getSessionsByParkingLot(int parkingLotId) throws SQLException {
@@ -291,7 +291,7 @@ public final class AccessDb {
     }
 
     // =========================================================
-    // ===== Pricing / club DB helpers =========================
+    // ===== Pricing / club helpers ============================
     // =========================================================
 
     public PriceList getCurrentPriceListAt(Connection c, int parkingLotId, LocalDateTime at) throws SQLException {
@@ -331,17 +331,6 @@ public final class AccessDb {
                 if (!rs.next()) return null;
                 Object o = rs.getObject(1);
                 if (o == null) return null;
-                return rs.getInt(1);
-            }
-        }
-    }
-
-    public Integer getCustomerIdByPhone(Connection c, String phoneNumber) throws SQLException {
-        String sql = "SELECT ID FROM Customer WHERE mobilePhon = ?";
-        try (PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, phoneNumber);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) return null;
                 return rs.getInt(1);
             }
         }
@@ -448,22 +437,8 @@ public final class AccessDb {
     }
 
     // =========================================================
-    // ===== Entry/Exit flow DB methods (SQL only) ==============
+    // ===== Entry/Exit helpers ================================
     // =========================================================
-
-    public Integer pickRandomFreeVehicle(Connection c) throws SQLException {
-        String sql =
-                "SELECT TOP 1 v.ID " +
-                        "FROM Vehicle v " +
-                        "WHERE v.ID NOT IN (SELECT vehicleID FROM ParkingSession WHERE endTime IS NULL) " +
-                        "ORDER BY RND(v.ID)";
-
-        try (PreparedStatement ps = c.prepareStatement(sql);
-             ResultSet rs = ps.executeQuery()) {
-            if (!rs.next()) return null;
-            return rs.getInt(1);
-        }
-    }
 
     public VehicleDataRow getVehicleData(Connection c, int vehicleId) throws SQLException {
         String sql = "SELECT ID, size, weight FROM Vehicle WHERE ID=?";
@@ -599,10 +574,18 @@ public final class AccessDb {
         }
     }
 
+    public void incrementLotSpacesIfPossible(Connection c, int parkingLotId) throws SQLException {
+        String sql =
+                "UPDATE ParkingLot SET availablaSpaces = availablaSpaces + 1 WHERE ID=?";
+        try (PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setInt(1, parkingLotId);
+            ps.executeUpdate();
+        }
+    }
+
     public SessionCoreRow loadSessionCore(Connection c, int sessionId) throws SQLException {
         String sql =
-                "SELECT parkingLotID, vehicleID, startTime, endTime " +
-                        "FROM ParkingSession WHERE ID=?";
+                "SELECT parkingLotID, vehicleID, startTime, endTime FROM ParkingSession WHERE ID=?";
 
         try (PreparedStatement ps = c.prepareStatement(sql)) {
             ps.setInt(1, sessionId);
@@ -655,7 +638,8 @@ public final class AccessDb {
             ps.executeUpdate();
         }
     }
- // ===== Client queries =====
+
+    // ===== Client queries =====
 
     public List<Object[]> getActiveParkingDetailsByPhoneRaw(String phoneNumber) throws SQLException {
 
@@ -691,7 +675,20 @@ public final class AccessDb {
         return list;
     }
 
+    public List<Integer> getFreeVehicleIds(Connection c) throws SQLException {
+        String sql =
+                "SELECT v.ID FROM Vehicle v " +
+                        "WHERE v.ID NOT IN (SELECT vehicleID FROM ParkingSession WHERE endTime IS NULL) " +
+                        "ORDER BY RND(v.ID)";
+        List<Integer> ids = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) ids.add(rs.getInt(1));
+        }
+        return ids;
+    }
 
+    
     // ===== helpers =====
     private double toDouble(Object o) {
         if (o == null) return 0.0;
