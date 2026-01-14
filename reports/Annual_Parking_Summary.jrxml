@@ -13,7 +13,7 @@
         <defaultValueExpression><![CDATA[2025]]></defaultValueExpression>
     </parameter>
 
-    <!-- SQL QUERY -->
+    <!-- SQL QUERY: Jasper מדבר ישירות עם Access -->
     <query language="sql"><![CDATA[
 SELECT
     ParkingLot.ID              AS parkingLotId,
@@ -78,15 +78,13 @@ ORDER BY
 
     <!-- ===== TITLE ===== -->
     <title height="50">
-        <element kind="staticText"
-                 uuid="641a1f65-8c90-4da3-80a4-a7277b8f8f2b"
+        <element kind="staticText" uuid="641a1f65-8c90-4da3-80a4-a7277b8f8f2b"
                  x="0" y="0" width="555" height="25"
                  fontSize="16.0" bold="true" hTextAlign="Center">
             <text><![CDATA[Annual Parking Summary]]></text>
         </element>
 
-        <element kind="textField"
-                 uuid="1d8c4c7f-5d40-423d-a418-185b26b5a61b"
+        <element kind="textField" uuid="1d8c4c7f-5d40-423d-a418-185b26b5a61b"
                  x="0" y="28" width="555" height="18"
                  hTextAlign="Center">
             <expression><![CDATA["Year: " + $P{EnterYear}]]></expression>
@@ -95,32 +93,27 @@ ORDER BY
 
     <!-- ===== COLUMN HEADER ===== -->
     <columnHeader height="22">
-        <element kind="staticText"
-                 uuid="5b764896-98eb-46cb-a413-755f51aaec7e"
+        <element kind="staticText" uuid="5b764896-98eb-46cb-a413-755f51aaec7e"
                  x="0" y="0" width="220" height="22">
             <text><![CDATA[Parking Lot]]></text>
         </element>
 
-        <element kind="staticText"
-                 uuid="843bb6ff-f2c9-4b45-9a61-373b7d2de7a2"
+        <element kind="staticText" uuid="843bb6ff-f2c9-4b45-9a61-373b7d2de7a2"
                  x="220" y="0" width="45" height="22">
             <text><![CDATA[ID]]></text>
         </element>
 
-        <element kind="staticText"
-                 uuid="701f6d22-005d-4e22-8096-1427545bacbc"
+        <element kind="staticText" uuid="701f6d22-005d-4e22-8096-1427545bacbc"
                  x="265" y="0" width="120" height="22">
             <text><![CDATA[City]]></text>
         </element>
 
-        <element kind="staticText"
-                 uuid="3051a17f-5de8-437b-aa92-8a4998ab7f7d"
+        <element kind="staticText" uuid="3051a17f-5de8-437b-aa92-8a4998ab7f7d"
                  x="385" y="0" width="100" height="22">
             <text><![CDATA[Total Paid]]></text>
         </element>
 
-        <element kind="staticText"
-                 uuid="af6b5064-5fba-441d-b8d8-175d229ac91f"
+        <element kind="staticText" uuid="af6b5064-5fba-441d-b8d8-175d229ac91f"
                  x="485" y="0" width="70" height="22">
             <text><![CDATA[Other]]></text>
         </element>
@@ -129,33 +122,27 @@ ORDER BY
     <!-- ===== DETAIL ===== -->
     <detail>
         <band height="18">
-            <element kind="textField"
-                     uuid="5a903753-2441-455c-bce6-885570ae424b"
+            <element kind="textField" uuid="5a903753-2441-455c-bce6-885570ae424b"
                      x="0" y="0" width="220" height="18">
                 <expression><![CDATA[$F{parkingLotName}]]></expression>
             </element>
 
-            <element kind="textField"
-                     uuid="751939cc-15b8-4842-9b0a-7a537c4d1ef7"
+            <element kind="textField" uuid="751939cc-15b8-4842-9b0a-7a537c4d1ef7"
                      x="220" y="0" width="45" height="18">
                 <expression><![CDATA[$F{parkingLotId}]]></expression>
             </element>
 
-            <element kind="textField"
-                     uuid="ddadd27e-a77c-4267-9a3b-07ca914d8d98"
+            <element kind="textField" uuid="ddadd27e-a77c-4267-9a3b-07ca914d8d98"
                      x="265" y="0" width="120" height="18">
                 <expression><![CDATA[$F{parkingLotCity}]]></expression>
             </element>
 
-            <element kind="textField"
-                     uuid="c5355eb8-f858-4f61-ad24-b4fa514d3115"
-                     x="385" y="0" width="100" height="18"
-                     pattern="#,##0.00">
+            <element kind="textField" uuid="c5355eb8-f858-4f61-ad24-b4fa514d3115"
+                     x="385" y="0" width="100" height="18" pattern="#,##0.00">
                 <expression><![CDATA[$F{totalAmountPaid}]]></expression>
             </element>
 
-            <element kind="textField"
-                     uuid="3ca0663a-e43e-4e93-9645-864cb781d000"
+            <element kind="textField" uuid="3ca0663a-e43e-4e93-9645-864cb781d000"
                      x="485" y="0" width="70" height="18">
                 <expression><![CDATA[$F{otherColorVehicleCount}]]></expression>
             </element>
