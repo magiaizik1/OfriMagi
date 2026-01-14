@@ -9,16 +9,6 @@ import java.sql.Connection;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * ReportController
- *
- * ✔ Access to DB is done ONLY via AccessDb
- * ✔ No direct DriverManager usage
- * ✔ No hardcoded DB path inside controller
- *
- * This keeps correct architectural separation:
- * Control → AccessDb → Database
- */
 public class ReportController {
 
     private final AccessDb db;
@@ -50,12 +40,31 @@ public class ReportController {
                 Map<String, Object> params = new HashMap<>();
                 params.put("EnterYear", year);
 
-                // מילוי הדוח מה-DB (SQL מתוך ה-jrxml!)
+                // מילוי הדוח מה-DB
                 JasperPrint print =
                         JasperFillManager.fillReport(report, params, conn);
 
-                // הצגה
+                // הצגה על המסך
                 JasperViewer.viewReport(print, false);
+
+                // =========================
+                // ייצוא לקבצים
+                // =========================
+
+                // PDF
+                JasperExportManager.exportReportToPdfFile(
+                        print, "reports/Annual_Parking_Summary_" + year + ".pdf");
+
+                // XML
+                JasperExportManager.exportReportToXmlFile(
+                        print, "reports/Annual_Parking_Summary_" + year + ".xml", true);
+
+                JOptionPane.showMessageDialog(
+                        null,
+                        "Report exported successfully to PDF and XML!",
+                        "Export Complete",
+                        JOptionPane.INFORMATION_MESSAGE
+                );
             }
 
         } catch (Exception e) {
