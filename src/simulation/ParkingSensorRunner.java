@@ -2,7 +2,6 @@ package simulation;
 
 import control.ParkingLotManagementController;
 import control.ParkingSessionManagementController;
-import control.ParkingSessionManagementController.SensorArrivalResult;
 import entity.ParkingLot;
 
 import java.util.List;
@@ -56,7 +55,7 @@ public class ParkingSensorRunner {
 
         try {
             // הפרמטר לא משנה – הקונטרולר יכפה 14
-            SensorArrivalResult result = sessionController.simulateVehicleArrivalAndPark(FIXED_LOT_ID);
+            control.ParkingEntryController.SensorArrivalResult result = sessionController.simulateVehicleArrivalAndPark(FIXED_LOT_ID);
 
             System.out.println("🧩 Outcome: " + result.outcome);
 
