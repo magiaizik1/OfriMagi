@@ -40,25 +40,33 @@ public final class AccessDb {
         Path p = Paths.get(path);
         if (p.isAbsolute()) return p;
 
-        // 1) try working directory (sometimes works)
+        // 1) Try working directory (Eclipse)
         Path runDir = Paths.get(System.getProperty("user.dir")).resolve(path);
         if (Files.exists(runDir)) return runDir;
 
-        // 2) try directory where the JAR is located (best for double-click)
+        // 2) Try folder where the runnable JAR is located (double-click / ZIP extracted)
         Path jarDir = getJarDir();
         if (jarDir != null) {
+            // a) jarDir + the given relative path (db/xxx.accdb)
             Path jarTry = jarDir.resolve(path);
             if (Files.exists(jarTry)) return jarTry;
 
-            // if JAR is inside "release", also try parent folder
+            // b) if accdb is next to the jar: jarDir/parkwise_OfriMagi.accdb
+            Path byName = jarDir.resolve(p.getFileName().toString());
+            if (Files.exists(byName)) return byName;
+
+            // c) if jar is inside subfolder, also try parent
             Path parent = jarDir.getParent();
             if (parent != null) {
                 Path parentTry = parent.resolve(path);
                 if (Files.exists(parentTry)) return parentTry;
+
+                Path parentByName = parent.resolve(p.getFileName().toString());
+                if (Files.exists(parentByName)) return parentByName;
             }
         }
 
-        // fallback
+        // 3) fallback
         return p;
     }
 
@@ -67,11 +75,12 @@ public final class AccessDb {
             URI uri = AccessDb.class.getProtectionDomain().getCodeSource().getLocation().toURI();
             Path location = Paths.get(uri);
 
-            // if running from a jar file: .../release/ParkWise.jar
+            // Running from a JAR file: .../runneble jar/Whatever.jar
             if (Files.isRegularFile(location)) {
                 return location.getParent();
             }
-            // if running from classes folder in Eclipse
+
+            // Running from Eclipse / classes folder
             return location;
         } catch (Exception e) {
             return null;
