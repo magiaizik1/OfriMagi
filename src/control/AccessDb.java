@@ -3,6 +3,7 @@ package control;
 import entity.ParkingSession;
 import entity.PriceList;
 
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -39,16 +40,42 @@ public final class AccessDb {
         Path p = Paths.get(path);
         if (p.isAbsolute()) return p;
 
+        // 1) try working directory (sometimes works)
         Path runDir = Paths.get(System.getProperty("user.dir")).resolve(path);
         if (Files.exists(runDir)) return runDir;
 
-        Path projectRoot = Paths.get(System.getProperty("user.dir")).getParent();
-        if (projectRoot != null) {
-            Path rootTry = projectRoot.resolve(path);
-            if (Files.exists(rootTry)) return rootTry;
+        // 2) try directory where the JAR is located (best for double-click)
+        Path jarDir = getJarDir();
+        if (jarDir != null) {
+            Path jarTry = jarDir.resolve(path);
+            if (Files.exists(jarTry)) return jarTry;
+
+            // if JAR is inside "release", also try parent folder
+            Path parent = jarDir.getParent();
+            if (parent != null) {
+                Path parentTry = parent.resolve(path);
+                if (Files.exists(parentTry)) return parentTry;
+            }
         }
 
+        // fallback
         return p;
+    }
+
+    private Path getJarDir() {
+        try {
+            URI uri = AccessDb.class.getProtectionDomain().getCodeSource().getLocation().toURI();
+            Path location = Paths.get(uri);
+
+            // if running from a jar file: .../release/ParkWise.jar
+            if (Files.isRegularFile(location)) {
+                return location.getParent();
+            }
+            // if running from classes folder in Eclipse
+            return location;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // =========================================================

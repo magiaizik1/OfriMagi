@@ -33,23 +33,35 @@ public class Main {
 
             // ===== Human actors GUI: Role selection =====
             RoleSelectUI roleSelect = new RoleSelectUI(new RoleSelectUI.RoleCallback() {
+                
+
                 @Override
-
                 public void onAdmin() {
+                    try {
+                        ParkingLotDashboardUI dashboard = new ParkingLotDashboardUI(
+                                db,
+                                parkingLotController,
+                                cityController,
+                                conveyorController,
+                                priceHistoryController,
+                                priceListController,
+                                sessionController
+                        );
 
-                    ParkingLotDashboardUI dashboard = new ParkingLotDashboardUI(
-                            db,
-                            parkingLotController,
-                            cityController,
-                            conveyorController,
-                            priceHistoryController,
-                            priceListController,
-                            sessionController  
-                    );
+                        dashboard.setVisible(true);
 
-                    dashboard.setVisible(true);
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                        JOptionPane.showMessageDialog(
+                                null,
+                                "Admin failed to open.\n" +
+                                "Most likely DB path is wrong or missing files.\n\n" +
+                                ex.getMessage(),
+                                "Error",
+                                JOptionPane.ERROR_MESSAGE
+                        );
+                    }
                 }
-
 
                 @Override
                 public void onClient() {
